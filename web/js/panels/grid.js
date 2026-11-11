@@ -39,7 +39,7 @@ export function build(root, ctx) {
     ctx.pollStation();
   } });
   const ulc = maStation("UNIT LOAD CONTROLLER", {
-    module: "plant_master", pvTag: "gross_mwe", spKey: "target_mwe", spStep: 10, digits: 0, devSpan: 50, range: [0, 1300],
+    module: "plant_master", pvTag: "gross_mwe", spKey: "target_mwe", spStep: 10, digits: 0, devSpan: 50, range: [0, 1250],
   }, ctx);
 
   root.append(h("div", { class: "board" },

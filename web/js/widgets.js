@@ -439,114 +439,154 @@ export function recorder(title, pens, { width = 360, height = 180, span = 600 } 
 // ---------------------------------------------------- M/A control station
 
 /**
- * Manual/Auto controller station for an automation module: process value,
- * setpoint, output; M and A pushbuttons; raise/lower that moves the output
- * in MANUAL and the setpoint in AUTO.
+ * Manual/Auto controller station for an automation module, laid out like a
+ * plant control station: process (PV) and setpoint (SP) on one 0-100 % of
+ * span indicator, setpoint adjustment, deviation indicator, output meter,
+ * M/A transfer and manual output adjustment.
+ *
+ * The setpoint is adjustable in either mode (SP ADJ); the output is adjusted
+ * by hand only in MANUAL (OUT). The scale span is the setpoint's adjustment
+ * range (or `cfg.range`), and the SP is also shown as a percentage of it.
+ *
+ * cfg.spKey may be a key, an array of keys (moved together, e.g. both ends
+ * of a programmed setpoint) or a function of telemetry returning either.
  */
 export function maStation(title, cfg, ctx) {
+  const pick = (v, t) => (typeof v === "function" ? v(t) : v);
+  const keysOf = t => { const k = pick(cfg.spKey, t); return k === undefined ? [] : Array.isArray(k) ? k : [k]; };
+  const hasSp = !!(cfg.spKey || cfg.spTag);
+  const hasOut = !!cfg.outTag;
+  const digits = cfg.digits ?? 1;
+
   const pv = h("span", { class: "seg-val" }, "0");
   const sp = h("span", { class: "seg-val" }, "0");
+  const spPct = h("span", { class: "ma-pct" }, "");
+  const pvBar = h("div", { class: "ma-bar-fill pv" }), spBar = h("div", { class: "ma-bar-fill sp" });
+  const lo = h("span", {}, ""), hi = h("span", {}, "");
   const outBar = h("div", { class: "ma-out-fill" });
   const outNum = h("span", {}, "0");
   const devPtr = h("div", { class: "ma-dev-ptr" });
   const status = h("div", { class: "ma-status" }, "");
   const setDev = tween(x => { devPtr.style.left = `${x}%`; });
   const setOut = tween(x => { outBar.style.width = `${x}%`; });
+  const setPvBar = tween(x => { pvBar.style.width = `${x}%`; });
+  const setSpBar = tween(x => { spBar.style.left = `${x}%`; });
   const mBtn = h("button", { class: "ma-btn m", onclick: () => { play("button"); ctx.setMode(cfg.module, "manual"); } }, "M");
   const aBtn = h("button", { class: "ma-btn a", onclick: () => { play("button"); ctx.setMode(cfg.module, "auto"); } }, "A");
-  const pick = (v, t) => (typeof v === "function" ? v(t) : v);
-  const nudge = dir => {
+
+  const m0 = t => t.modules.find(x => x.id === cfg.module);
+  const nudgeSp = dir => {
     const t = ctx.t();
     if (!t) return;
-    const mode = ctx.moduleMode(cfg.module);
-    const key = pick(cfg.spKey, t);
-    if (mode === "auto" && key) {
+    const step = pick(cfg.spStep, t) ?? 1;
+    const lim = m0(t)?.setpoint_limits ?? {};
+    for (const key of keysOf(t)) {
       const cur = ctx.setpoint(cfg.module, key) ?? 0;
-      ctx.send({ type: "set_setpoint", module: cfg.module, key, value: +(cur + dir * cfg.spStep).toFixed(4) });
-    } else if (mode === "manual" && cfg.outCmd) {
-      const cur = t.readings[cfg.outTag] ?? 0;
-      ctx.send(cfg.outCmd(Math.max(cfg.outMin ?? 0, Math.min(cfg.outMax ?? 100, cur + dir * cfg.outStep))));
+      const [a, b] = lim[key] ?? [-Infinity, Infinity];
+      const v = Math.max(a, Math.min(b, cur + dir * step));
+      if (v !== cur) ctx.send({ type: "set_setpoint", module: cfg.module, key, value: +v.toFixed(4) });
     }
   };
-  const rl = springSwitch("", { lo: "▼", hi: "▲", onHold: nudge, repeat: 250 });
+  const nudgeOut = dir => {
+    const t = ctx.t();
+    if (!t || ctx.moduleMode(cfg.module) !== "manual" || !cfg.outCmd) return;
+    const cur = t.readings[cfg.outTag] ?? 0;
+    ctx.send(cfg.outCmd(Math.max(cfg.outMin ?? 0, Math.min(cfg.outMax ?? 100, cur + dir * cfg.outStep))));
+  };
+  const spSw = cfg.spKey ? springSwitch("", { lo: "▼", hi: "▲", onHold: nudgeSp, repeat: 200 }) : null;
+  const outSw = cfg.outCmd ? springSwitch("", { lo: "▼", hi: "▲", onHold: nudgeOut, repeat: 250 }) : null;
 
-  // Analog controller face (1970s-80s panel station): vertical scale with a
-  // black process pointer and red setpoint pointer, horizontal output meter
-  // and a mechanical setpoint drum.
-  const hasScale = !!cfg.pvTag;
+  // Analog face: dual-pointer vertical indicator (black PV, red SP) on a
+  // 0-100 % scale, engineering span printed at the ends, setpoint drum.
   const aPv = h("div", { class: "va-ptr pv" }), aSp = h("div", { class: "va-ptr sp" });
-  const ticks = h("div", { class: "va-ticks" });
+  const ticks = h("div", { class: "va-ticks" },
+    ...[0, 25, 50, 75, 100].map(p => h("div", { class: "va-tick", style: `bottom:${p}%` }, h("span", {}, `${p}`))));
   const aScale = h("div", { class: "va-scale" }, ticks, aPv, aSp);
+  const aHi = h("div", { class: "va-eng" }, ""), aLo = h("div", { class: "va-eng" }, "");
   const aOut = h("div", { class: "ha-ptr" });
   const drum = h("div", { class: "drum" }, "----");
+  const drumPct = h("div", { class: "drum-pct" }, "");
   const setAPv = tween(x => { aPv.style.bottom = `${x}%`; });
   const setASp = tween(x => { aSp.style.bottom = `${x}%`; });
   const setAOut = tween(x => { aOut.style.left = `${x}%`; });
-  let range = null, rangeKey = "";
   const analogFace = h("div", { class: "ma-analog only-analog" },
-    hasScale ? h("div", { class: "va-wrap" }, aScale, h("div", { class: "va-labels" }, h("span", { class: "pvl" }, "PV ▶"), h("span", { class: "spl" }, "◀ SP"))) : null,
+    cfg.pvTag ? h("div", { class: "va-wrap" }, h("div", { class: "va-col" }, aHi, aScale, aLo, h("div", { class: "va-unit" }, "% SPAN")),
+      h("div", { class: "va-labels" }, h("span", { class: "pvl" }, "■ PV"), hasSp ? h("span", { class: "spl" }, "■ SP") : null)) : null,
     h("div", { class: "va-side" },
-      cfg.spKey || cfg.spTag ? h("div", { class: "drum-wrap" }, h("div", { class: "drum-label" }, "SETPOINT"), drum) : null,
-      cfg.outTag ? h("div", { class: "ha-wrap" }, h("div", { class: "drum-label" }, "OUTPUT %"), h("div", { class: "ha-scale" }, h("div", { class: "ha-ticks" }), aOut)) : null));
-  function scaleFor(t, pvV, spV) {
-    const r = typeof cfg.range === "function" ? cfg.range(t) : cfg.range;
-    if (r) return r;
-    const key = `${pick(cfg.pvTag, t)}`;
-    if (!range || rangeKey !== key) {
-      const c = spV ?? pvV ?? 0;
-      const span = Math.max((cfg.devSpan ?? 1) * 4, Math.abs(c) * 0.2, 1);
-      range = [c - span, c + span];
-      rangeKey = key;
-    }
-    return range;
-  }
-  function drawTicks(r) {
-    const k = `${r[0]}:${r[1]}`;
-    if (ticks.dataset.k === k) return;
-    ticks.dataset.k = k;
-    ticks.replaceChildren(...[0, 1, 2, 3, 4].map(i => h("div", { class: "va-tick", style: `bottom:${i * 25}%` },
-      h("span", {}, `${+(r[0] + (r[1] - r[0]) * i / 4).toFixed(Math.abs(r[1] - r[0]) < 5 ? 2 : 0)}`))));
-  }
+      hasSp ? h("div", { class: "drum-wrap" }, h("div", { class: "drum-label" }, cfg.spLabel ?? "SETPOINT"), drum, drumPct) : null,
+      hasOut ? h("div", { class: "ha-wrap" }, h("div", { class: "drum-label" }, "OUTPUT 0-100 %"), h("div", { class: "ha-scale" }, h("div", { class: "ha-ticks" }), aOut)) : null));
 
   const el = h("div", { class: "ma-station" },
     h("div", { class: "ma-title" }, title),
     analogFace,
     h("div", { class: "ma-rows only-digital" },
       cfg.pvTag ? h("div", { class: "ma-row" }, h("label", {}, "PV"), h("div", { class: "seg mini" }, pv)) : null,
-      cfg.spKey || cfg.spTag ? h("div", { class: "ma-row" }, h("label", {}, "SP"), h("div", { class: "seg mini sp" }, sp)) : null,
-      cfg.pvTag && (cfg.spKey || cfg.spTag) ? h("div", { class: "ma-dev" }, devPtr) : null,
-      cfg.outTag ? h("div", { class: "ma-row" }, h("label", {}, "OUT"), h("div", { class: "ma-out" }, outBar), outNum) : null),
-    h("div", { class: "ma-ctl" }, mBtn, aBtn, rl.el),
+      hasSp ? h("div", { class: "ma-row" }, h("label", {}, cfg.spLabel ? cfg.spLabel.slice(0, 4) : "SP"), h("div", { class: "seg mini sp" }, sp), spPct) : null,
+      cfg.pvTag ? h("div", { class: "ma-bar" }, pvBar, hasSp ? spBar : null) : null,
+      cfg.pvTag ? h("div", { class: "ma-span" }, lo, h("span", {}, "% SPAN"), hi) : null,
+      cfg.pvTag && hasSp ? h("div", { class: "ma-dev", title: "Deviation PV − SP" }, devPtr) : null,
+      hasOut ? h("div", { class: "ma-row" }, h("label", {}, "OUT"), h("div", { class: "ma-out" }, outBar), outNum) : null),
+    h("div", { class: "ma-ctl" }, mBtn, aBtn,
+      spSw ? h("div", { class: "ma-adj" }, spSw.el, h("div", { class: "ma-adj-l" }, "SP ADJ")) : null,
+      outSw ? h("div", { class: "ma-adj" }, outSw.el, h("div", { class: "ma-adj-l" }, "OUT (MAN)")) : null),
     status);
+
+  let auto = null, autoKey = "";
+  function span(t, m, pvV, spV) {
+    const r = pick(cfg.range, t);
+    if (r) return r;
+    const lim = keysOf(t).map(k => m?.setpoint_limits?.[k]).filter(Boolean);
+    if (lim.length) return [Math.min(...lim.map(l => l[0])), Math.max(...lim.map(l => l[1]))];
+    const key = `${pick(cfg.pvTag, t)}`;
+    if (!auto || autoKey !== key) {
+      const c = spV ?? pvV ?? 0;
+      const w = Math.max((cfg.devSpan ?? 1) * 4, Math.abs(c) * 0.2, 1);
+      auto = [c - w, c + w];
+      autoKey = key;
+    }
+    return auto;
+  }
+  const f = v => fmt(v, digits);
+  let lastSp;
+
   return {
     el,
     update(t) {
       const mode = ctx.moduleMode(cfg.module);
-      const m = t.modules.find(x => x.id === cfg.module);
+      const m = m0(t);
       const pvV = t.readings[pick(cfg.pvTag, t)];
-      const key = pick(cfg.spKey, t);
+      const key = keysOf(t)[0];
       const spV = cfg.spTag ? t.readings[cfg.spTag] : key ? m?.setpoints[key] : undefined;
-      pv.textContent = fmt(pvV, cfg.digits ?? 1);
-      sp.textContent = spV === undefined ? "----" : fmt(spV, cfg.digits ?? 1);
+      const r = span(t, m, pvV, spV);
+      const pct = v => (v - r[0]) / (r[1] - r[0]) * 100;
+      const clip = x => Math.max(-2, Math.min(102, x));
+      pv.textContent = f(pvV);
+      sp.textContent = spV === undefined ? "----" : f(spV);
+      const spP = spV === undefined ? "" : `${pct(spV).toFixed(0)} %`;
+      spPct.textContent = spP;
+      drum.textContent = spV === undefined ? "----" : f(spV);
+      drumPct.textContent = spV === undefined ? "" : `${spP} of ${f(r[0])}–${f(r[1])}`;
+      if (spV !== undefined && lastSp !== undefined && Math.abs(spV - lastSp) > 1e-9) {
+        drum.classList.remove("moved"); sp.parentElement.classList.remove("moved");
+        void drum.offsetWidth;
+        drum.classList.add("moved"); sp.parentElement.classList.add("moved");
+      }
+      lastSp = spV;
+      lo.textContent = f(r[0]); hi.textContent = f(r[1]);
+      aLo.textContent = f(r[0]); aHi.textContent = f(r[1]);
+      if (pvV !== undefined) { setPvBar(Math.max(0, Math.min(100, pct(pvV)))); setAPv(clip(pct(pvV))); }
+      if (spV !== undefined) { setSpBar(Math.max(0, Math.min(100, pct(spV)))); setASp(clip(pct(spV))); }
+      aSp.style.display = spV === undefined ? "none" : "";
       if (spV !== undefined && pvV !== undefined) {
         const dev = Math.max(-1, Math.min(1, (pvV - spV) / (cfg.devSpan ?? 1)));
         setDev(50 + dev * 48);
       }
       const o = t.readings[cfg.outTag];
       if (o !== undefined) {
-        setOut(Math.max(0, Math.min(100, (o - (cfg.outMin ?? 0)) / ((cfg.outMax ?? 100) - (cfg.outMin ?? 0)) * 100)));
+        const op = Math.max(0, Math.min(100, (o - (cfg.outMin ?? 0)) / ((cfg.outMax ?? 100) - (cfg.outMin ?? 0)) * 100));
+        setOut(op); setAOut(op);
         outNum.textContent = o.toFixed(cfg.outDigits ?? 0);
       }
-      if (hasScale) {
-        const r = scaleFor(t, pvV, spV);
-        drawTicks(r);
-        const frac = v => Math.max(-2, Math.min(102, (v - r[0]) / (r[1] - r[0]) * 100));
-        if (pvV !== undefined) setAPv(frac(pvV));
-        if (spV !== undefined) setASp(frac(spV));
-        aSp.style.display = spV === undefined ? "none" : "";
-      }
-      drum.textContent = spV === undefined ? "----" : fmt(spV, cfg.digits ?? 1);
-      if (o !== undefined) setAOut(Math.max(0, Math.min(100, (o - (cfg.outMin ?? 0)) / ((cfg.outMax ?? 100) - (cfg.outMin ?? 0)) * 100)));
       mBtn.classList.toggle("lit", mode === "manual");
       aBtn.classList.toggle("lit", mode === "auto");
       el.classList.toggle("ext", mode === "external");
@@ -555,6 +595,8 @@ export function maStation(title, cfg, ctx) {
       const unavailable = (m && !m.owned) || missing.length > 0;
       el.classList.toggle("not-owned", unavailable);
       aBtn.disabled = unavailable;
+      outSw?.el.classList.toggle("disabled", mode !== "manual");
+      spSw?.el.classList.toggle("disabled", mode === "external");
       status.textContent = mode === "external" ? "EXTERNAL (plugin)"
         : m && !m.owned ? "MODULE NOT INSTALLED"
         : missing.length ? "NO COMPUTER LINK" : analogCtl ? "ANALOG CONTROLLER" : "";

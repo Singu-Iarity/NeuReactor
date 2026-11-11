@@ -76,11 +76,11 @@ export function build(root, ctx) {
     onHold: dir => ctx.send({ type: "rod_motion", selection, direction: dir > 0 ? "out" : "in" }),
     onRelease: () => ctx.send({ type: "rod_motion", selection, direction: "hold" }),
   });
-  const rodMa = maStation("ROD CONTROL (Tavg)", { module: "rod_control", pvTag: "tavg_c", spTag: "tref_c", spKey: "tavg_full_c", spStep: 0.1, devSpan: 3 }, ctx);
+  const rodMa = maStation("ROD CONTROL (Tavg)", { module: "rod_control", pvTag: "tavg_c", spTag: "tref_c", spKey: ["tavg_noload_c", "tavg_full_c"], spLabel: "TREF (PROGRAM)", spStep: 0.1, devSpan: 3, range: [285, 315] }, ctx);
   const rxReset = pushbutton("RX TRIP RESET", { onPress: () => ctx.send({ type: "reset_trip" }) });
   // Reactor power controller (supervises rod control and boron).
   const rpcMa = maStation("REACTOR POWER CONTROL", {
-    module: "reactor_power", pvTag: "nuclear_power_pct", spKey: "power_pct", spStep: 0.5, digits: 1, devSpan: 5, range: [0, 120],
+    module: "reactor_power", pvTag: "nuclear_power_pct", spKey: "power_pct", spStep: 0.5, digits: 1, devSpan: 5, range: [0, 102],
   }, ctx);
   const rpcMode = selector("POWER CTRL MODE", [{ label: "ROD", value: 0 }, { label: "BORON", value: 1 }, { label: "COORD", value: 2 }],
     v => ctx.send({ type: "set_setpoint", module: "reactor_power", key: "mode", value: v }));

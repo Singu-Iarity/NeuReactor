@@ -73,6 +73,9 @@ pub struct ModuleView {
     pub price: u64,
     pub requires_upgrades: Vec<UpgradeId>,
     pub setpoints: BTreeMap<String, f64>,
+    /// Adjustment limits [min, max] of each setpoint, in engineering units.
+    #[serde(default)]
+    pub setpoint_limits: BTreeMap<String, [f64; 2]>,
 }
 
 /// One snapshot of instrument readings and discrete plant status.

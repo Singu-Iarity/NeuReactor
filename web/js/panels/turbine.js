@@ -52,7 +52,7 @@ export function build(root, ctx) {
     module: "turbine_governor",
     pvTag: t => (t.generator_breaker ? "gross_mwe" : "turbine_speed_rpm"),
     spKey: t => (t.generator_breaker ? "target_mwe" : "speed_rpm"),
-    spStep: 1, digits: 0, devSpan: 30,
+    spStep: t => (t.generator_breaker ? 5 : 10), digits: 0, devSpan: 30,
     outTag: "turbine_valve_pct", outDigits: 1, outStep: 0.1,
     outCmd: v => ({ type: "set_turbine_valve", fraction: v / 100 }),
   }, ctx);

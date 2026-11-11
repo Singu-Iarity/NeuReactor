@@ -2859,6 +2859,19 @@ impl Pwr {
                         .get(&m.id)
                         .cloned()
                         .unwrap_or_default(),
+                    setpoint_limits: self
+                        .automation
+                        .setpoints
+                        .get(&m.id)
+                        .map(|sp| {
+                            sp.keys()
+                                .filter_map(|k| {
+                                    AutomationState::setpoint_limits(m.id, k)
+                                        .map(|r| (k.clone(), r))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
                 .collect(),
         }
