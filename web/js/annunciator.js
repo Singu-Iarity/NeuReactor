@@ -4,43 +4,23 @@
 //   cleared        -> slow flash (ringback) until RESET
 // Info-severity windows are plain status lights (steady, no horn).
 
+import * as sound from "./sound.js";
+
 const state = new Map(); // tag -> { active, acked, ringback, severity, panel }
 let hornEnabled = true;
 let silenced = false;
-let audio = null;
-let hornNode = null;
 
-function ensureAudio() {
-  if (!audio) {
-    try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { audio = null; }
+const RANK = { warning: 1, alarm: 2, trip: 3 };
+function updateSignal() {
+  let worst = null;
+  for (const st of state.values()) {
+    if (st.acked || !st.active || !RANK[st.severity]) continue;
+    if (!worst || RANK[st.severity] > RANK[worst]) worst = st.severity;
   }
-  return audio;
-}
-// Browsers only allow audio after a user gesture.
-window.addEventListener("pointerdown", () => ensureAudio()?.resume?.(), { once: false });
-
-function horn(on) {
-  const ctx = audio;
-  if (!ctx) return;
-  if (on && !hornNode) {
-    const osc = ctx.createOscillator();
-    const lfo = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const lfoGain = ctx.createGain();
-    osc.type = "square"; osc.frequency.value = 520;
-    lfo.type = "square"; lfo.frequency.value = 2.5;
-    lfoGain.gain.value = 0.04; gain.gain.value = 0.04;
-    lfo.connect(lfoGain).connect(gain.gain);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start(); lfo.start();
-    hornNode = { osc, lfo };
-  } else if (!on && hornNode) {
-    hornNode.osc.stop(); hornNode.lfo.stop();
-    hornNode = null;
-  }
+  sound.alarmSignal(hornEnabled && !silenced ? worst : null);
 }
 
-export function setHornEnabled(v) { hornEnabled = v; if (!v) horn(false); }
+export function setHornEnabled(v) { hornEnabled = v; updateSignal(); }
 export function hornIsEnabled() { return hornEnabled; }
 
 /** Feed the current active alarm list from telemetry. */
@@ -72,18 +52,19 @@ export function ingest(alarms) {
       else st.ringback = true;
     }
   }
-  const anyUnacked = [...state.values()].some(s => !s.acked && s.active);
-  horn(hornEnabled && !silenced && anyUnacked);
+  updateSignal();
 }
 
 export function acknowledge(panel) {
+  sound.play("ack");
   for (const st of state.values()) if (!panel || st.panel === panel) st.acked = true;
   ingest([...state.entries()].filter(([, s]) => s.active).map(([tag, s]) => ({ tag, severity: s.severity, panel: s.panel, text: s.text })));
 }
 
-export function silence() { silenced = true; horn(false); }
+export function silence() { sound.play("button"); silenced = true; updateSignal(); }
 
 export function reset(panel) {
+  sound.play("button");
   for (const [tag, st] of state) {
     if ((!panel || st.panel === panel) && !st.active && st.acked) state.delete(tag);
   }

@@ -3,6 +3,7 @@
 import { api, send, toast } from "./api.js";
 import { h, annunciatorPanel } from "./widgets.js";
 import * as ann from "./annunciator.js";
+import * as sound from "./sound.js";
 import * as reactor from "./panels/reactor.js";
 import * as rcs from "./panels/rcs.js";
 import * as cvcs from "./panels/cvcs.js";
@@ -22,22 +23,13 @@ function localStorageGet(k) { try { return localStorage.getItem(k); } catch (_) 
 function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* ignore */ } }
 
 // ------------------------------------------------------- SR count audio
-let audioCtx = null, countsOn = false, cps = 0;
-function click() {
-  const n = audioCtx.createBufferSource();
-  const buf = audioCtx.createBuffer(1, 256, audioCtx.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / 30) * 0.4;
-  n.buffer = buf;
-  n.connect(audioCtx.destination);
-  n.start(audioCtx.currentTime + Math.random() * 0.05);
-}
+let countsOn = false, cps = 0;
 setInterval(() => {
-  if (!countsOn || !audioCtx) return;
+  if (!countsOn) return;
   // Audible count rate is divided down above ~100 cps like a real scaler.
   const rate = cps > 100 ? 100 + Math.log10(cps / 100) * 40 : cps;
   let k = rate * 0.05;
-  while (k > 0) { if (Math.random() < Math.min(1, k)) click(); k -= 1; }
+  while (k > 0) { if (Math.random() < Math.min(1, k)) sound.play("count", Math.random() * 0.05); k -= 1; }
 }, 50);
 
 // ---------------------------------------------------------------- ctx
@@ -47,10 +39,7 @@ const ctx = {
   moduleMode: id => telemetry?.modules.find(m => m.id === id)?.mode ?? "manual",
   setpoint: (id, key) => telemetry?.modules.find(m => m.id === id)?.setpoints[key],
   setMode: (module, mode) => send({ type: "set_module_mode", module, mode }),
-  audioCounts(on) {
-    countsOn = on;
-    if (on && !audioCtx) try { audioCtx = new AudioContext(); } catch (_) { countsOn = false; }
-  },
+  audioCounts(on) { countsOn = on; sound.unlock(); },
   countRate(v) { cps = v || 0; },
   scramPair,
 };
@@ -70,8 +59,8 @@ function scramPair() {
       timer = setTimeout(() => { armed = [false, false]; btns.forEach(b => b.classList.remove("lit")); }, 2000);
     }
   };
-  const btns = [0, 1].map(i => h("button", { class: "scram-btn", onclick: () => press(i) }, i ? "B" : "A"));
-  const cover = h("button", { class: "scram-cover", onclick: () => el.classList.toggle("open"), title: "Lift cover" }, "MANUAL SCRAM");
+  const btns = [0, 1].map(i => h("button", { class: "scram-btn", onclick: () => { sound.play("button"); press(i); } }, i ? "B" : "A"));
+  const cover = h("button", { class: "scram-cover", onclick: () => { sound.play("cover"); el.classList.toggle("open"); }, title: "Lift cover" }, "MANUAL SCRAM");
   const el = h("div", { class: "scram-pair" }, cover, h("div", { class: "scram-btns" }, ...btns), h("div", { class: "scram-label" }, "PUSH BOTH TO SCRAM"));
   return el;
 }
@@ -114,6 +103,14 @@ $("#master-sil").onclick = () => ann.silence();
 $("#master-rst").onclick = () => ann.reset();
 $("#horn").onclick = () => { ann.setHornEnabled(!ann.hornIsEnabled()); $("#horn").classList.toggle("lit", ann.hornIsEnabled()); };
 $("#horn").classList.add("lit");
+// Master sound controls (persisted per browser).
+const mute = $("#mute"), vol = $("#volume");
+const showMute = () => { mute.textContent = sound.settings.muted ? "🔇" : "🔊"; mute.classList.toggle("off", sound.settings.muted); };
+vol.value = Math.round(sound.settings.volume * 100);
+vol.oninput = () => { sound.unlock(); sound.settings.volume = vol.value / 100; };
+mute.onclick = () => { sound.unlock(); sound.settings.muted = !sound.settings.muted; showMute(); };
+showMute();
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => sound.play("detent")));
 $("#top-scram").append(scramPair());
 document.querySelectorAll("#timectl button").forEach(b => b.onclick = async () => {
   const s = b.dataset.scale;
@@ -141,6 +138,7 @@ function render() {
   });
 
   ann.ingest(t.alarms);
+  sound.update(t);
   annCells.forEach((cell, tag) => { cell.className = `ann-win ${ann.windowClass(tag)}`; });
   for (const P of PANELS) {
     const st = ann.panelState(P.id);

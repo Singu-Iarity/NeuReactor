@@ -3,6 +3,8 @@
 // object with update(...) and is styled by the active control room theme
 // (body[data-room="analog"|"digital"]).
 
+import { play } from "./sound.js";
+
 const NS = "http://www.w3.org/2000/svg";
 
 export function h(tag, attrs = {}, ...children) {
@@ -207,6 +209,7 @@ export function jhandle(label, { left = "TRIP", right = "CLOSE", onLeft, onRight
   const zoneR = h("button", { class: "jh-zone right", title: right, onclick: () => { flick(1); onRight?.(); } });
   let pos = 0;
   function flick(dir) {
+    play("jhandle");
     handle.setAttribute("transform", `rotate(${dir * 45} 50 50)`);
     if (center) setTimeout(() => handle.setAttribute("transform", `rotate(${pos * 30} 50 50)`), 450);
   }
@@ -233,7 +236,7 @@ export function selector(label, positions, onChange) {
   const n = positions.length;
   const sweep = n <= 3 ? 50 : n <= 5 ? 80 : 110;
   const angleOf = i => (n === 1 ? 0 : -sweep + 2 * sweep * i / (n - 1));
-  const labels = positions.map((p, i) => h("button", { class: "sel-pos", style: `--a:${angleOf(i)}deg`, onclick: () => onChange?.(p.value ?? p) }, p.label ?? p));
+  const labels = positions.map((p, i) => h("button", { class: "sel-pos", style: `--a:${angleOf(i)}deg`, onclick: () => { play("detent"); onChange?.(p.value ?? p); } }, p.label ?? p));
   const el = h("div", { class: "selector" }, plate(label, "small"), h("div", { class: "sel-body" }, ...labels, knob));
   return {
     el,
@@ -248,7 +251,7 @@ export function selector(label, positions, onChange) {
 
 /** Round pushbutton, optionally illuminated. */
 export function pushbutton(text, { color = "white", onPress, small = false } = {}) {
-  const b = h("button", { class: `pb ${color} ${small ? "small" : ""}`, onclick: () => onPress?.() });
+  const b = h("button", { class: `pb ${color} ${small ? "small" : ""}`, onclick: () => { play("button"); onPress?.(); } });
   const el = h("div", { class: "pb-wrap" }, b, h("div", { class: "pb-label" }, text));
   return { el, update(lit, disabled = false) { b.classList.toggle("lit", !!lit); el.classList.toggle("disabled", disabled); } };
 }
@@ -260,10 +263,11 @@ export function pushbutton(text, { color = "white", onPress, small = false } = {
  */
 export function springSwitch(label, { lo = "LOWER", hi = "RAISE", onHold, onRelease, repeat = 0 } = {}) {
   let timer = null;
-  const stop = () => { if (timer) { clearInterval(timer); timer = null; onRelease?.(); lever.className = "ss-lever"; } };
+  const stop = () => { if (timer) { clearInterval(timer); timer = null; play("springRelease"); onRelease?.(); lever.className = "ss-lever"; } };
   const start = dir => {
     stop();
     lever.className = `ss-lever ${dir < 0 ? "lo" : "hi"}`;
+    play("spring");
     onHold?.(dir);
     timer = setInterval(() => repeat ? onHold?.(dir) : null, repeat || 1000);
   };
@@ -410,8 +414,8 @@ export function maStation(title, cfg, ctx) {
   const outNum = h("span", {}, "0");
   const devPtr = h("div", { class: "ma-dev-ptr" });
   const status = h("div", { class: "ma-status" }, "");
-  const mBtn = h("button", { class: "ma-btn m", onclick: () => ctx.setMode(cfg.module, "manual") }, "M");
-  const aBtn = h("button", { class: "ma-btn a", onclick: () => ctx.setMode(cfg.module, "auto") }, "A");
+  const mBtn = h("button", { class: "ma-btn m", onclick: () => { play("button"); ctx.setMode(cfg.module, "manual"); } }, "M");
+  const aBtn = h("button", { class: "ma-btn a", onclick: () => { play("button"); ctx.setMode(cfg.module, "auto"); } }, "A");
   const pick = (v, t) => (typeof v === "function" ? v(t) : v);
   const nudge = dir => {
     const t = ctx.t();

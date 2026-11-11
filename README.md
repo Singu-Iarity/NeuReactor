@@ -29,6 +29,27 @@ cargo run --release -p nr-cli -- bench
 
 Scenarios: `steady`, `scram`, `load-follow`, `rcp-trip`, `xenon`.
 
+## Sound
+
+Everything has sound, synthesised in the browser. Audio starts after your
+first click (a browser rule).
+- **Switches:** J-handle switches clunk, selector knobs click, pushbuttons
+  and spring switches snap. Rejected commands buzz.
+- **Plant events:**
+  - breakers clack open and closed
+  - the turbine stop valves slam
+  - a scram clatters as the rods drop
+  - control rods tick with every step
+  - reactor coolant pumps growl when they start
+- **Ambience:** HVAC, the hum of the coolant pumps, and a turbine whine that
+  follows shaft speed, plus steam dump/relief roar and PORV hiss.
+- **Alarms:** warnings chime, alarms sound the annunciator horn, trips sound a
+  klaxon. ACK and SIL behave as on a real board.
+- **SR SPEAKER** (Reactor tab) plays the source range count rate.
+
+Master volume and mute are in the top bar. Ambience, alarm and effects
+toggles are on the Plant Computer tab, and the settings are remembered.
+
 ## Equipment and upgrades
 
 The **Equipment** tab lists the unit's I&C hardware and automation software.

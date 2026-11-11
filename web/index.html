@@ -28,7 +28,11 @@
       <button class="pb-round red" id="master-ack" title="Master acknowledge">ACK</button>
       <button class="pb-round red" id="master-sil" title="Silence horn">SIL</button>
       <button class="pb-round white" id="master-rst" title="Reset cleared alarms">RST</button>
-      <button class="pb-round white" id="horn" title="Horn on/off">♪</button>
+      <button class="pb-round white" id="horn" title="Alarm horn on/off">♪</button>
+    </div>
+    <div class="soundctl" title="Master volume (click the speaker to mute)">
+      <button id="mute" class="btn">🔊</button>
+      <input id="volume" type="range" min="0" max="100" step="1">
     </div>
     <div id="top-scram"></div>
   </header>
