@@ -25,6 +25,7 @@ pub enum Actuator {
     Exciter,
     NisBlocks,
     MainSteamIsolation,
+    SwitchyardBreakers,
     Diesels,
     AuxFeedwater,
 }
@@ -48,6 +49,7 @@ impl Actuator {
         Actuator::Exciter,
         Actuator::NisBlocks,
         Actuator::MainSteamIsolation,
+        Actuator::SwitchyardBreakers,
         Actuator::Diesels,
         Actuator::AuxFeedwater,
     ];
@@ -163,6 +165,18 @@ pub enum Command {
     SetPeggingSteam {
         open: bool,
     },
+    /// Open/close an electrical distribution breaker (snake_case name, e.g.
+    /// "tie_a_b", "bus_a_sut", "edg1").
+    SetElecBreaker {
+        breaker: String,
+        closed: bool,
+    },
+    SetDiesel {
+        index: usize,
+        running: bool,
+    },
+    /// Reset tripped station transformers after the overload is cleared.
+    ResetTransformers,
     SetMsiv {
         open: bool,
     },
@@ -201,6 +215,12 @@ pub enum Command {
         enabled: bool,
     },
     RepairGenerator,
+    /// Lose / restore offsite (grid) power (instructor scenario).
+    SetOffsitePower {
+        available: bool,
+    },
+    /// Refill both diesel fuel tanks (sandbox).
+    RefuelDiesels,
     /// Install / remove an automation module (sandbox; career buys them).
     SetModuleInstalled {
         module: ModuleId,
@@ -271,6 +291,10 @@ impl Command {
             }
             C::SetPeggingSteam { .. } => CommandKind::Manual(A::Deaerator),
             C::SetMsiv { .. } => CommandKind::Manual(A::MainSteamIsolation),
+            C::SetElecBreaker { .. } | C::ResetTransformers => {
+                CommandKind::Manual(A::SwitchyardBreakers)
+            }
+            C::SetDiesel { .. } => CommandKind::Manual(A::Diesels),
             C::Scram | C::TripTurbine => CommandKind::Trip,
             C::ResetTrip | C::ResetTurbine => CommandKind::Reset,
             C::SetModuleMode { module, mode } => CommandKind::ModuleMode(*module, *mode),
@@ -279,6 +303,8 @@ impl Command {
             C::InjectSensorFault { .. }
             | C::SetTrainingMode { .. }
             | C::RepairGenerator
+            | C::SetOffsitePower { .. }
+            | C::RefuelDiesels
             | C::SetModuleInstalled { .. }
             | C::SetComponent { .. }
             | C::SetModuleController { .. }

@@ -85,6 +85,15 @@ export function build(root, ctx) {
         kpi("DATE", v.date), kpi("FUNDS", M(v.money)), kpi("PHASE", v.phase === "build" ? "CONSTRUCTION" : "OPERATING"),
         kpi("POWER PRICE", `$${v.price_mwh}/MWh`), kpi("O&M", `${M(v.om_per_day)}/day`),
         kpi("REVENUE", M(v.revenue_total)), kpi("SPENT", M(v.costs_total))),
+      v.phase === "operating" ? h("div", { class: "bills" },
+        h("div", { class: "card-name" }, "THIS MONTH (billed at month end)"),
+        h("table", { class: "bill-table" },
+          ...[["Fuel", v.bills.fuel], ["Cooling water", v.bills.water], ["Grid power import", v.bills.grid_power],
+            ["Maintenance", v.bills.maintenance], ["Staff", v.bills.staff], ["Diesel fuel (paid)", v.bills.diesel_fuel],
+            ["Fines & penalties (paid)", v.bills.penalties], ["Revenue so far", v.month_revenue]]
+            .map(([k, x]) => h("tr", {}, h("td", {}, k), h("td", { class: "num" }, M(x))))),
+        v.statements.length ? h("div", { class: "card-sub" }, `Last statement ${v.statements[0].month}: charged ${M(
+          ["fuel", "water", "grid_power", "maintenance", "staff"].reduce((a, k) => a + v.statements[0].bills[k], 0))}, revenue ${M(v.statements[0].revenue)}`) : null) : null,
       v.phase === "build" && v.missing_components.length
         ? h("p", { class: "note warn" }, `Still to equip: ${v.missing_components.map(s => s.replaceAll("_", " ")).join(", ")}`) : null);
     actions.replaceChildren(

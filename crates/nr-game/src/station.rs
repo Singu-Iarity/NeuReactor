@@ -340,7 +340,7 @@ impl Station {
 
         // Performance against demand.
         if online && self.demand_mwe > 0.0 {
-            let net = plant.gross_mwe - plant.p.house_load_mwe;
+            let net = plant.gross_mwe - plant.house_load();
             let past_deadline = self.deadline.map(|d| t > d).unwrap_or(true);
             if past_deadline {
                 if (net - self.demand_mwe).abs() <= 0.03 * RATED_NET {
@@ -370,7 +370,7 @@ impl Station {
         if self.demand_mwe <= 0.0 || !plant.tg.breaker {
             return 1.0;
         }
-        let net = plant.gross_mwe - plant.p.house_load_mwe;
+        let net = plant.gross_mwe - plant.house_load();
         if (net - self.demand_mwe).abs() <= 0.03 * RATED_NET {
             1.05
         } else if self.deadline.map(|d| plant.time > d).unwrap_or(true) {
@@ -406,7 +406,7 @@ impl Station {
             add("call_waiting", "CALL IN PROGRESS", Severity::Info);
         }
         if plant.tg.breaker && self.demand_mwe > 0.0 {
-            let net = plant.gross_mwe - plant.p.house_load_mwe;
+            let net = plant.gross_mwe - plant.house_load();
             let past = self.deadline.map(|d| plant.time > d).unwrap_or(true);
             if past && (net - self.demand_mwe).abs() > 0.03 * RATED_NET {
                 add("off_demand", "OUTPUT OFF DEMAND", Severity::Warning);

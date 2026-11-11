@@ -34,6 +34,7 @@ pub enum UpgradeId {
     RodGroupSelect,
     DigitalCondenserControls,
     GridDispatchLink,
+    DigitalElectricalControls,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +173,7 @@ pub const CATALOG: &[UpgradeInfo] = &[
     ROD_GROUP_SELECT,
     DIGITAL_CONDENSER,
     GRID_DISPATCH_LINK,
+    DIGITAL_ELECTRICAL,
 ];
 
 /// Board hardware entries appended to the catalog.
@@ -204,6 +206,16 @@ pub const GRID_DISPATCH_LINK: UpgradeInfo = UpgradeInfo {
     description: "Data link from the grid operator to the plant computer: modern grid station and automatic generation control (the unit load controller follows dispatch).",
     price: 3_500_000,
     sections: &["grid.station"],
+};
+
+pub const DIGITAL_ELECTRICAL: UpgradeInfo = UpgradeInfo {
+    id: U::DigitalElectricalControls,
+    kind: UpgradeKind::PanelPackage,
+    computer: Some(U::PlantProcessComputer),
+    name: "Digital Electrical Distribution Controls",
+    description: "Modern one-line mimic, breaker controls, diesel and DC panels wired to the plant process computer.",
+    price: 1_500_000,
+    sections: &["electrical.oneline", "electrical.diesels", "electrical.dc"],
 };
 
 pub fn info(id: UpgradeId) -> &'static UpgradeInfo {

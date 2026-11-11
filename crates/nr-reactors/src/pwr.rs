@@ -26,8 +26,8 @@ use nr_control::{Rps, RpsInputs};
 use nr_core::{clamp, lerp, steam, Rng, MPA};
 use nr_physics::turbine_generator::RATED_RPM;
 use nr_physics::{
-    CloseOutcome, Condenser, Deaerator, DecayHeat, DelayedNeutronData, PointKinetics, Poisons,
-    RodBank, Sensor, SensorFault, TurbineGenerator,
+    Breaker, CloseOutcome, Condenser, Deaerator, DecayHeat, DelayedNeutronData, DieselState,
+    Electrical, LoadDemand, PointKinetics, Poisons, RodBank, Sensor, SensorFault, TurbineGenerator,
 };
 use std::collections::BTreeMap;
 
@@ -191,6 +191,15 @@ const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
     ("generator_health_pct", 0.0, 0.0, (0.0, 100.0)),
     ("turbine_vibration_um", 1.0, 1.5, (0.0, 300.0)),
     ("power_ref_pct", 0.0, 0.0, (0.0, 120.0)),
+    ("house_load_mw", 0.5, 0.2, (0.0, 200.0)),
+    ("sut_load_mw", 0.3, 0.2, (0.0, 200.0)),
+    ("uat_load_mw", 0.3, 0.2, (0.0, 200.0)),
+    ("grid_import_mw", 0.5, 0.1, (0.0, 200.0)),
+    ("edg_load_mw", 0.5, 0.05, (0.0, 20.0)),
+    ("battery_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("dc_volts", 0.5, 0.2, (0.0, 140.0)),
+    ("edg1_fuel_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("edg2_fuel_pct", 0.0, 0.0, (0.0, 100.0)),
     ("condenser_kpa", 2.0, 0.1, (0.0, 110.0)),
     ("condensing_temp_c", 5.0, 0.2, (0.0, 120.0)),
     ("cw_flow_pct", 1.0, 0.5, (0.0, 120.0)),
@@ -289,6 +298,11 @@ pub struct Pwr {
     pub condenser: Condenser,
     pub deaerator: Deaerator,
     pub msiv_open: bool,
+    /// Station electrical distribution.
+    pub elec: Electrical,
+    /// The generator breaker was opened deliberately (not by a trip).
+    pub breaker_opened_by_operator: bool,
+    reverse_power_s: f64,
     /// Turbine hall local checks done (comms); cleared by a turbine trip.
     pub turbine_hall_ready: bool,
     /// Grid dispatch permission to synchronise (comms).
@@ -418,6 +432,9 @@ impl Pwr {
             condenser: Condenser::at_power(),
             deaerator: Deaerator::at_power(),
             msiv_open: true,
+            elec: Electrical::normal(),
+            breaker_opened_by_operator: false,
+            reverse_power_s: 0.0,
             turbine_hall_ready: true,
             grid_permission: true,
             vac_required_until: -1.0,
@@ -490,6 +507,9 @@ impl Pwr {
         ] {
             plant.automation.modes.insert(m, ModuleMode::Auto);
         }
+        let d = plant.load_demand();
+        plant.elec.settle(&d);
+        plant.elec.step(&d, plant.tg.breaker, 0.0);
         plant.init_sensors();
         plant
     }
@@ -550,6 +570,7 @@ impl Pwr {
         plant.turbine_hall_ready = false;
         plant.grid_permission = false;
         plant.rod_selection = "SA".into();
+        plant.elec = Electrical::shutdown();
         plant.tg.breaker = false;
         plant.prev_breaker = false;
         plant.tg.field_breaker = false;
@@ -578,6 +599,9 @@ impl Pwr {
             .automation
             .modes
             .insert(ModuleId::RodControl, ModuleMode::Manual);
+        let d = plant.load_demand();
+        plant.elec.settle(&d);
+        plant.elec.step(&d, plant.tg.breaker, 0.0);
         plant.init_sensors();
         plant
     }
@@ -613,7 +637,8 @@ impl Pwr {
     }
 
     fn feed_max(&self) -> f64 {
-        self.p.feed_max_frac * self.automation.equipment.perf(Slot::FeedPumps)
+        let pumps = (self.elec.buses.bus_a as u8 + self.elec.buses.bus_b as u8) as f64 / 2.0;
+        self.p.feed_max_frac * self.automation.equipment.perf(Slot::FeedPumps) * pumps
     }
 
     /// Controller setpoint error for a module, in engineering units.
@@ -730,6 +755,7 @@ impl Pwr {
         self.update_nis_permissives();
         self.run_automation(dt);
         self.run_protection();
+        self.step_electrical(dt);
         self.step_rods(dt);
         self.step_neutronics(dt);
         self.step_primary(dt);
@@ -741,6 +767,115 @@ impl Pwr {
         let n = (seconds / DT).round() as usize;
         for _ in 0..n {
             self.step();
+        }
+    }
+
+    fn load_demand(&self) -> LoadDemand {
+        LoadDemand {
+            rcps: self.rcp_running,
+            cw_pumps: self.condenser.cw_pumps,
+            vacuum_pumps: self.condenser.vacuum_pumps,
+            feed: self.feed,
+            pzr_heaters: self.heaters,
+            charging: self.charging > 0.5,
+        }
+    }
+
+    /// Station service load drawn by the plant's own equipment [MW].
+    pub fn house_load(&self) -> f64 {
+        self.elec.house_load_mw
+    }
+
+    fn step_electrical(&mut self, dt: f64) {
+        let eq = &self.automation.equipment;
+        self.elec.transformer_quality = eq.perf(Slot::StationTransformers);
+        self.elec.diesel_quality = eq.perf(Slot::EmergencyDiesels);
+        // Diesel load sequencer: start on safety bus undervoltage, close the
+        // output breaker once the diesel is up to speed.
+        if self.automation.mode(ModuleId::DieselSequencer) == ModuleMode::Auto
+            && self.module_usable(ModuleId::DieselSequencer)
+        {
+            for i in 0..2 {
+                let bus_live = if i == 0 {
+                    self.elec.buses.safety1
+                } else {
+                    self.elec.buses.safety2
+                };
+                let br = if i == 0 { Breaker::Edg1 } else { Breaker::Edg2 };
+                if !bus_live && self.elec.diesels[i].state == DieselState::Stopped {
+                    self.elec.start_diesel(i);
+                }
+                if !bus_live && self.elec.diesels[i].running() && !self.elec.closed(br) {
+                    self.elec.set_breaker(br, true);
+                }
+            }
+        }
+        if self.tg.breaker {
+            self.breaker_opened_by_operator = false;
+            // Anti-motoring (reverse power) relay: a motoring generator is
+            // tripped off the grid after a short time delay.
+            if self.tg.net_power < 0.0 {
+                self.reverse_power_s += dt;
+                if self.reverse_power_s > 5.0 {
+                    self.tg.open();
+                    self.events
+                        .push(PlantEvent::trip("Generator reverse power trip (32G)"));
+                }
+            } else {
+                self.reverse_power_s = 0.0;
+            }
+        } else {
+            self.reverse_power_s = 0.0;
+        }
+        let demand = self.load_demand();
+        let events = self.elec.step(&demand, self.tg.breaker, dt);
+        for e in events {
+            if e.contains("trip") || e.contains("fuel") {
+                self.events.push(PlantEvent::trip(e));
+            } else {
+                self.events.push(PlantEvent::info(e));
+            }
+        }
+        let b = self.elec.buses.clone();
+        // Loads on dead buses stop.
+        for i in 0..4 {
+            let live = if i < 2 { b.bus_a } else { b.bus_b };
+            if self.rcp_running[i] && !live {
+                self.rcp_running[i] = false;
+                self.events.push(PlantEvent::trip(&format!(
+                    "RCP {} tripped: 6.9 kV bus de-energised",
+                    i + 1
+                )));
+            }
+        }
+        for i in 0..3 {
+            let live = if i < 2 { b.bus_a } else { b.bus_b };
+            if self.condenser.cw_pumps[i] && !live {
+                self.condenser.cw_pumps[i] = false;
+            }
+        }
+        if !b.bus_a {
+            self.condenser.vacuum_pumps = [false; 2];
+        }
+        if !b.safety1 {
+            self.heaters = 0.0;
+        }
+        if !b.safety1 && !b.safety2 {
+            self.charging = 0.0;
+        }
+        // Grid lost: the generator is islanded and its breaker opens.
+        if !self.elec.grid_available && self.tg.breaker {
+            self.tg.open();
+            self.events.push(PlantEvent::trip(
+                "Loss of offsite power: generator breaker opened",
+            ));
+        }
+        // RPS and breaker trip coils are fail-safe on loss of DC.
+        if !b.dc && !self.reactor_tripped && !self.training_mode {
+            self.trips.push("Loss of DC control power".into());
+            self.events
+                .push(PlantEvent::trip("Loss of DC control power"));
+            self.trip_reactor();
         }
     }
 
@@ -1044,7 +1179,22 @@ impl Pwr {
         m.insert("turbine_valve_pct", self.turbine_valve * 100.0);
         m.insert("steam_dump_pct", self.steam_dump * 100.0);
         m.insert("gross_mwe", self.gross_mwe);
-        m.insert("net_mwe", self.gross_mwe - self.p.house_load_mwe);
+        m.insert("net_mwe", self.gross_mwe - self.house_load());
+        m.insert("house_load_mw", self.elec.house_load_mw);
+        m.insert("sut_load_mw", self.elec.sut_load_mw);
+        m.insert("uat_load_mw", self.elec.uat_load_mw);
+        m.insert("grid_import_mw", self.elec.import_mw);
+        m.insert("edg_load_mw", self.elec.edg_load_mw);
+        m.insert("battery_pct", self.elec.battery_pct);
+        m.insert("dc_volts", self.elec.dc_volts);
+        m.insert(
+            "edg1_fuel_pct",
+            100.0 * self.elec.diesels[0].fuel_l / self.elec.diesels[0].fuel_capacity_l,
+        );
+        m.insert(
+            "edg2_fuel_pct",
+            100.0 * self.elec.diesels[1].fuel_l / self.elec.diesels[1].fuel_capacity_l,
+        );
         m.insert("reactivity_pcm", self.rho.total * 1e5);
         m.insert("turbine_speed_rpm", self.tg.rpm());
         m.insert("gen_freq_hz", self.tg.gen_hz());
@@ -1708,6 +1858,40 @@ impl Pwr {
             }
             Command::SetSjae { on } => self.condenser.sjae_on = *on,
             Command::SetPeggingSteam { open } => self.deaerator.pegging_steam = *open,
+            Command::SetElecBreaker { breaker, closed } => {
+                let Some(b) = Electrical::breaker_from_name(breaker) else {
+                    return deny("unknown breaker");
+                };
+                self.elec.set_breaker(b, *closed);
+            }
+            Command::SetDiesel { index, running } => {
+                if *index > 1 {
+                    return deny("diesel index must be 0 or 1");
+                }
+                if *running {
+                    self.elec.start_diesel(*index);
+                } else {
+                    self.elec.stop_diesel(*index);
+                }
+            }
+            Command::ResetTransformers => {
+                self.elec.reset_transformers();
+                self.events
+                    .push(PlantEvent::info("Station transformer lockouts reset"));
+            }
+            Command::SetOffsitePower { available } => {
+                self.elec.grid_available = *available;
+                self.events.push(if *available {
+                    PlantEvent::info("Offsite power restored")
+                } else {
+                    PlantEvent::trip("LOSS OF OFFSITE POWER")
+                });
+            }
+            Command::RefuelDiesels => {
+                for d in &mut self.elec.diesels {
+                    d.fuel_l = d.fuel_capacity_l;
+                }
+            }
             Command::SetMsiv { open } => {
                 self.msiv_open = *open;
                 self.events.push(PlantEvent::warn(if *open {
@@ -1743,6 +1927,7 @@ impl Pwr {
             }
             Command::SetGeneratorBreaker { closed: false } => {
                 if self.tg.breaker {
+                    self.breaker_opened_by_operator = true;
                     self.tg.open();
                     self.events
                         .push(PlantEvent::warn("Generator breaker opened by operator"));
@@ -2175,6 +2360,11 @@ impl Pwr {
 
     // ------------------------------------------------------------- telemetry
 
+    #[cfg(test)]
+    pub(crate) fn alarms_for_test(&self) -> Vec<String> {
+        self.alarms().into_iter().map(|a| a.tag).collect()
+    }
+
     /// Every annunciator window / status light currently lit, by panel.
     fn alarms(&self) -> Vec<Alarm> {
         use Severity::{Alarm as A, Info as I, Trip as T, Warning as W};
@@ -2487,6 +2677,72 @@ impl Pwr {
             }
         }
 
+        // ----------------------------------------------------- electrical
+        let el = "electrical";
+        let e = &self.elec;
+        if !e.grid_available {
+            add(el, "loop", "LOSS OF OFFSITE POWER", T);
+        }
+        if e.sut_tripped {
+            add(el, "sut_trip", "STARTUP XFMR TRIP / LOCKOUT", A);
+        } else if e.sut_load_mw > e.sut_rating * e.transformer_quality.powi(3) {
+            add(el, "sut_overload", "STARTUP XFMR OVERLOAD", W);
+        }
+        if e.uat_tripped {
+            add(el, "uat_trip", "UNIT AUX XFMR TRIP / LOCKOUT", A);
+        } else if e.uat_load_mw > e.uat_rating * e.transformer_quality.powi(3) {
+            add(el, "uat_overload", "UNIT AUX XFMR OVERLOAD", W);
+        }
+        if !e.buses.bus_a {
+            add(el, "bus_a_dead", "6.9 kV BUS A DE-ENERGISED", A);
+        }
+        if !e.buses.bus_b {
+            add(el, "bus_b_dead", "6.9 kV BUS B DE-ENERGISED", A);
+        }
+        if !e.buses.safety1 {
+            add(el, "s1_uv", "SAFETY BUS 1 UNDERVOLTAGE", A);
+        }
+        if !e.buses.safety2 {
+            add(el, "s2_uv", "SAFETY BUS 2 UNDERVOLTAGE", A);
+        }
+        for (i, d) in e.diesels.iter().enumerate() {
+            match d.state {
+                DieselState::Running => add(
+                    el,
+                    &format!("edg{}_run", i + 1),
+                    &format!("EDG {} RUNNING", i + 1),
+                    I,
+                ),
+                DieselState::Starting => add(
+                    el,
+                    &format!("edg{}_run", i + 1),
+                    &format!("EDG {} STARTING", i + 1),
+                    W,
+                ),
+                DieselState::Stopped => {}
+            }
+            if d.fuel_l < 0.2 * d.fuel_capacity_l {
+                add(
+                    el,
+                    &format!("edg{}_fuel", i + 1),
+                    &format!("EDG {} FUEL LOW", i + 1),
+                    W,
+                );
+            }
+        }
+        if !e.buses.safety1 && !e.buses.safety2 {
+            add(el, "batt_discharge", "BATTERY DISCHARGING", W);
+        }
+        if !e.buses.dc {
+            add(el, "dc_low", "125 V DC BUS LOW VOLTAGE", T);
+        }
+        if e.closed(Breaker::TieAB) {
+            add(el, "tie_closed", "BUS A-B TIE CLOSED", I);
+        }
+        if e.import_mw > 0.5 {
+            add(el, "importing", "IMPORTING GRID POWER", I);
+        }
+
         // ----------------------------------------------- plant computer
         let pc = "computer";
         if self.training_mode {
@@ -2541,6 +2797,7 @@ impl Pwr {
             msiv_open: self.msiv_open,
             condenser_available: self.condenser.available(),
             turbine_hall_ready: self.turbine_hall_ready,
+            electrical: serde_json::to_value(&self.elec).unwrap_or_default(),
             grid_permission: self.grid_permission,
             generator_lockout: self.tg.lockout,
             sync_check_active: self.sync_check_active(),

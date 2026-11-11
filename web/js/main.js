@@ -12,12 +12,13 @@ import * as cvcs from "./panels/cvcs.js";
 import * as steam from "./panels/steam.js";
 import * as turbine from "./panels/turbine.js";
 import * as grid from "./panels/grid.js";
+import * as electrical from "./panels/electrical.js";
 import * as comms from "./panels/comms.js";
 import * as equipment from "./panels/equipment.js";
 import * as computer from "./panels/computer.js";
 import * as career from "./panels/career.js";
 
-const PANELS = [reactor, rcs, cvcs, steam, turbine, grid, comms, equipment, computer, career];
+const PANELS = [reactor, rcs, cvcs, steam, turbine, electrical, grid, comms, equipment, computer, career];
 /** Panels that must see every telemetry update even when hidden. */
 const ALWAYS = new Set(["computer"]);
 const $ = s => document.querySelector(s);

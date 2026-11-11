@@ -115,7 +115,7 @@ fn sim_loop(world: Arc<Mutex<World>>) {
             station.agc = false;
         }
         if station.agc && station.demand_mwe > 0.0 {
-            let gross = station.demand_mwe + plant.p.house_load_mwe;
+            let gross = station.demand_mwe + plant.house_load();
             let module = nr_api::ModuleId::PlantMaster;
             let cur = plant
                 .automation

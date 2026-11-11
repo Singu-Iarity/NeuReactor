@@ -97,7 +97,16 @@ Open the **Career** tab and choose a start year and difficulty.
    on vintage feed pumps) needs a **conversion kit**, priced into the
    purchase automatically.
 2. **Commission** the unit. It starts at hot standby with every module in
-   MANUAL. Power sold earns $/MWh; O&M costs money every day.
+   MANUAL. Power sold earns $/MWh.
+   - **Monthly bills** accrue as you run and are charged at month end:
+     nuclear fuel (thermal energy), cooling water (per CW pump), grid power
+     imported for station service while the generator is off-line,
+     maintenance and staff. Statements appear in the Career tab and news feed.
+   - **Penalties**: an unplanned loss of generation (trip, reverse-power
+     relay, loss of offsite power) is fined in proportion to the MWe lost.
+     Opening the breaker yourself is not penalised.
+   - **Diesel fuel**: emergency diesels burn fuel while running; order a
+     delivery from the Electrical tab.
 3. **Calendar & research.** As the in-game years pass, new technology
    arrives ("due to new research, you can now install …"). Pay for research
    projects to unlock it early. Major components can only be swapped during
@@ -165,6 +174,12 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
 - Steam generators, turbine/generator, steam dumps, relief valves, feedwater heating
 - Condenser (CW pumps, hogging vacuum pumps, SJAEs, hotwell), deaerator, MSIVs
 - Turbine vibration with rotor critical speeds (and optional screen shake)
+- Station electrical: startup transformer (grid) and unit auxiliary
+  transformer (generator), 6.9 kV buses A/B with tie, 4.16 kV safety buses,
+  two emergency diesels with load sequencer and fuel, 125 V DC with battery.
+  Motor-start inrush can overload and lock out the startup transformer; bus B
+  needs the generator or the A-B tie; dead buses stop their loads; loss of DC
+  trips the reactor; the anti-motoring relay opens a motoring generator.
 - Grid dispatch station and plant telephones (turbine hall, grid, maintenance, chemistry)
 - Westinghouse-style nuclear instrumentation: source, intermediate and power range, with P-6/P-10 blocks
 - Turbine-generator: shaft dynamics, grid frequency drift, synchroscope phase, excitation, sync-check, damage and lockout

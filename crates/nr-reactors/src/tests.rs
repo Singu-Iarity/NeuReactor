@@ -218,3 +218,51 @@ fn boron_automation_restores_tavg_after_load_follow_xenon() {
     );
     assert!((p.gross_mwe - 1150.0).abs() < 20.0);
 }
+
+#[test]
+fn house_load_comes_from_running_equipment() {
+    let p = Pwr::full_power();
+    let h = p.house_load();
+    assert!((30.0..80.0).contains(&h), "full power house load {h}");
+    let s = Pwr::hot_standby();
+    assert!(
+        s.elec.import_mw > 10.0,
+        "shutdown plant imports {}",
+        s.elec.import_mw
+    );
+}
+
+#[test]
+fn loss_of_offsite_power_with_diesel_sequencer() {
+    let mut p = Pwr::full_power();
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::DieselSequencer,
+            mode: ModuleMode::Auto,
+        },
+    );
+    op(&mut p, Command::SetOffsitePower { available: false });
+    p.advance(60.0);
+    assert!(!p.tg.breaker, "generator must be islanded");
+    assert!(
+        p.reactor_tripped,
+        "loss of forced flow must trip the reactor"
+    );
+    assert!(p.rcp_running.iter().all(|r| !r));
+    assert!(
+        p.elec.buses.safety1 && p.elec.buses.safety2,
+        "diesels pick up the safety buses"
+    );
+    assert!(p.elec.buses.dc);
+}
+
+#[test]
+fn loss_of_offsite_power_without_diesels_drains_battery() {
+    let mut p = Pwr::full_power();
+    op(&mut p, Command::SetOffsitePower { available: false });
+    p.advance(60.0);
+    assert!(!p.elec.buses.safety1 && !p.elec.buses.safety2);
+    assert!(p.elec.battery_pct < 100.0);
+    assert!(p.alarms_for_test().iter().any(|a| a == "batt_discharge"));
+}

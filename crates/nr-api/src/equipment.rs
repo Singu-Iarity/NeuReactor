@@ -83,6 +83,8 @@ pub enum Slot {
     AirRemoval,
     Deaerator,
     SteamIsolation,
+    StationTransformers,
+    EmergencyDiesels,
 }
 
 pub struct SlotInfo {
@@ -96,6 +98,20 @@ pub struct SlotInfo {
 }
 
 pub const SLOTS: &[SlotInfo] = &[
+    SlotInfo {
+        slot: Slot::StationTransformers,
+        name: "Station Service Transformers (SUT/UAT)",
+        base_price: 25e6,
+        year_offset: 2,
+        effect: "Transformer capacity before overload trips",
+    },
+    SlotInfo {
+        slot: Slot::EmergencyDiesels,
+        name: "Emergency Diesel Generators",
+        base_price: 35e6,
+        year_offset: 3,
+        effect: "Diesel start time and fuel economy",
+    },
     SlotInfo {
         slot: Slot::CirculatingWater,
         name: "Circulating Water Pumps",
@@ -301,6 +317,7 @@ pub fn upgrade_year(u: UpgradeId) -> i32 {
         U::RodGroupSelect => 1966,
         U::DigitalCondenserControls => 1993,
         U::GridDispatchLink => 1998,
+        U::DigitalElectricalControls => 1991,
         U::TurbineControlComputer => 1982,
         U::SolidStateRodControl => 1984,
         U::GeneratorSyncInterface => 1985,
@@ -326,6 +343,7 @@ pub fn module_component(m: ModuleId) -> Option<Slot> {
         M::Deaerator => Some(Slot::Deaerator),
         M::SteamDump => Some(Slot::Condenser),
         M::ReactorPower => Some(Slot::RodDrives),
+        M::DieselSequencer => Some(Slot::EmergencyDiesels),
         M::TurbineGovernor => Some(Slot::Turbine),
         M::GeneratorSync | M::Excitation => Some(Slot::Generator),
         _ => None,

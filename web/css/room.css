@@ -520,3 +520,26 @@ body.bf .powerbar .demand.pending { background: #000; }
 [data-gen="analog"] .ma-btn.a.lit { background: #f5f0d8; color: #111; box-shadow: 0 0 10px #f5f0d8; }
 [data-gen="analog"] .ma-status { color: #e8b23a; }
 .sel-label { font: 700 9px var(--mono); color: var(--ink); max-width: 220px; word-break: break-all; }
+
+/* ---------------------------------------------------- electrical one-line */
+.oneline { width: 560px; max-width: 100%; height: auto; background: #10161a; border: 2px solid #2a3238; border-radius: 4px; }
+.ol-wire { fill: none; stroke: #3c4a52; stroke-width: 4; stroke-linecap: square; transition: stroke .3s; }
+.ol-wire.live { stroke: #e8c547; }
+.ol-label { fill: #9fb0ba; font: 600 10px var(--mono, monospace); }
+.ol-tag { fill: #cfd8dc; font: 600 9px var(--mono, monospace); }
+.ol-src { fill: #1d2428; stroke: #6b7c86; stroke-width: 2; }
+.ol-src.live { fill: #3a3410; stroke: #e8c547; }
+rect.ol-src.discharging { stroke: #ff9a2f; }
+.ol-brk { cursor: pointer; }
+.ol-brk rect { fill: #0f3a1a; stroke: #3bff6e; stroke-width: 2; }
+.ol-brk.closed rect { fill: #5a1410; stroke: #ff3b2f; }
+body.lamps-green-on .ol-brk rect { fill: #5a1410; stroke: #ff3b2f; }
+body.lamps-green-on .ol-brk.closed rect { fill: #0f3a1a; stroke: #3bff6e; }
+.ol-brk:hover rect { stroke-width: 3; }
+[data-gen="analog"] .oneline { background: #d9cfb4; border-color: #6d6249; }
+[data-gen="analog"] .ol-label, [data-gen="analog"] .ol-tag { fill: #2b2618; }
+[data-gen="analog"] .ol-wire { stroke: #8a8068; }
+[data-gen="analog"] .ol-wire.live { stroke: #1c3f9e; }
+.bill-table { border-collapse: collapse; font: 12px var(--mono, monospace); margin: 4px 0; }
+.bill-table td { padding: 1px 10px 1px 0; }
+.bill-table td.num { text-align: right; }

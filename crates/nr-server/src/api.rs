@@ -373,6 +373,13 @@ fn career_action(w: &mut World, action: &str, body: &str) -> Result<(), String> 
             let World { plant, career, .. } = w;
             career.as_mut().ok_or("no career active")?.buy(p, plant)
         }
+        "diesel_fuel" => {
+            let World { plant, career, .. } = w;
+            career
+                .as_mut()
+                .ok_or("no career active")?
+                .buy_diesel_fuel(plant)
+        }
         "research" => {
             let u: nr_api::Unlock = serde_json::from_str(body).map_err(parse)?;
             w.career
@@ -415,7 +422,7 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
             let target = w.station.accept(t).ok_or("no pending load request")?;
             // Hand the new load to the unit load controller if it is in AUTO,
             // otherwise straight to the turbine governor.
-            let gross = target + w.plant.p.house_load_mwe;
+            let gross = target + w.plant.house_load();
             let module = if w.plant.automation.mode(modules::ModuleId::PlantMaster)
                 == modules::ModuleMode::Auto
             {

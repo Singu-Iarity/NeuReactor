@@ -206,9 +206,9 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Auto-starts emergency diesels on loss of offsite power and sequences safety loads.",
         price: 1_800_000,
         prerequisites: &[],
-        requires_upgrades: &[U::PlantProcessComputer],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalElectricalControls],
         actuators: &[A::Diesels],
-        implemented: false,
+        implemented: true,
     },
     ModuleInfo {
         id: M::AuxFeedAutoStart,

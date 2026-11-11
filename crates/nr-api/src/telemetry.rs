@@ -106,6 +106,8 @@ pub struct Telemetry {
     pub condenser_available: bool,
     /// Turbine hall local checks complete (comms).
     pub turbine_hall_ready: bool,
+    /// Electrical distribution: breakers, buses, transformers, diesels, DC.
+    pub electrical: serde_json::Value,
     /// Grid dispatch permission to synchronise (comms).
     pub grid_permission: bool,
     pub generator_lockout: bool,

@@ -129,6 +129,7 @@ pub struct Electrical {
     prev: LoadDemand,
     /// Equipment quality multipliers.
     pub transformer_quality: f64,
+    pub diesel_quality: f64,
 }
 
 const BASE_A: f64 = 4.0;
@@ -199,11 +200,16 @@ impl Electrical {
             uat_overcurrent: 0.0,
             prev: LoadDemand::default(),
             transformer_quality: 1.0,
+            diesel_quality: 1.0,
         }
     }
 
     pub fn closed(&self, b: Breaker) -> bool {
         self.breakers.get(&b).copied().unwrap_or(false)
+    }
+
+    pub fn breaker_from_name(name: &str) -> Option<Breaker> {
+        serde_json::from_value(serde_json::Value::String(name.to_string())).ok()
     }
 
     pub fn set_breaker(&mut self, b: Breaker, closed: bool) {
@@ -214,7 +220,7 @@ impl Electrical {
         let d = &mut self.diesels[i];
         if d.state == DieselState::Stopped && d.fuel_l > 0.0 {
             d.state = DieselState::Starting;
-            d.start_timer = 10.0;
+            d.start_timer = 10.0 / self.diesel_quality.powi(4);
         }
     }
 
@@ -262,6 +268,7 @@ impl Electrical {
         self.inrush.retain(|r| r.0 > 0.0);
 
         // Diesels.
+        let dq = self.diesel_quality;
         for (i, d) in self.diesels.iter_mut().enumerate() {
             if d.state == DieselState::Starting {
                 d.start_timer -= dt;
@@ -276,7 +283,7 @@ impl Electrical {
             }
             if d.state == DieselState::Running {
                 // ~0.07 L/s idle plus ~0.25 L/s per MW.
-                d.fuel_l = (d.fuel_l - (0.07 + 0.25 * d.load_mw) * dt).max(0.0);
+                d.fuel_l = (d.fuel_l - (0.07 + 0.25 * d.load_mw) / dq * dt).max(0.0);
                 if d.fuel_l <= 0.0 {
                     d.state = DieselState::Stopped;
                     events.push("EDG out of fuel");
@@ -412,7 +419,7 @@ impl Electrical {
         self.house_load_mw = net_a + net_b + edg_load;
 
         // Transformer overcurrent (inverse-time-ish integrator).
-        let sut_rating = self.sut_rating * self.transformer_quality;
+        let sut_rating = self.sut_rating * self.transformer_quality.powi(3);
         if sut_load > 1.2 * sut_rating {
             self.sut_overcurrent += (sut_load / sut_rating - 1.2) * dt;
         } else {
@@ -422,7 +429,7 @@ impl Electrical {
             self.sut_tripped = true;
             events.push("Startup transformer overcurrent trip");
         }
-        let uat_rating = self.uat_rating * self.transformer_quality;
+        let uat_rating = self.uat_rating * self.transformer_quality.powi(3);
         if uat_load > 1.2 * uat_rating {
             self.uat_overcurrent += (uat_load / uat_rating - 1.2) * dt;
         } else {

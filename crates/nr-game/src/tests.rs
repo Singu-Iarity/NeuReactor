@@ -136,8 +136,20 @@ fn commission_operate_and_earn() {
     for _ in 0..24 {
         c.tick(3600.0, &fp);
     }
-    let expected = (fp.gross_mwe - fp.p.house_load_mwe) * 24.0 * c.price_mwh - c.om_per_day;
+    // Revenue is credited immediately; running costs accrue for the month.
+    let expected = (fp.gross_mwe - fp.house_load()) * 24.0 * c.price_mwh;
     assert!((c.money - before - expected).abs() / expected < 0.01);
+    assert!((c.bills.maintenance + c.bills.staff - c.om_per_day).abs() < 1.0);
+    assert!(c.bills.fuel > 100_000.0, "fuel {}", c.bills.fuel);
+    // A month later the statement is billed.
+    let before = c.money;
+    let accrued = c.bills.payable();
+    for _ in 0..31 {
+        c.tick(DAY, &fp);
+    }
+    assert_eq!(c.statements.len(), 1);
+    assert!(c.statements[0].bills.payable() > accrued);
+    assert!(c.money < before + 31.0 * expected);
     // Components can't be swapped while generating...
     let mut running = Pwr::full_power();
     assert!(c
@@ -197,4 +209,43 @@ fn calendar_announces_new_technology_and_research_unlocks_early() {
         .text
         .contains("Due to new research, you can now install Dated Main Turbine")));
     assert!(c.date().ends_with("1980") || c.date().ends_with("1981"));
+}
+
+#[test]
+fn unplanned_trip_is_penalised_and_diesel_fuel_is_bought() {
+    let mut plant = Pwr::hot_standby();
+    let mut c = Career::new(1990, Difficulty::Normal);
+    equip_all(&mut c, Era::Dated, Tier::Quality, &mut plant);
+    let mut plant = c.commission().unwrap();
+    let mut fp = Pwr::full_power();
+    c.tick(60.0, &fp);
+    let before = c.money;
+    fp.command(&nr_api::Command::Scram, &nr_api::Origin::Operator)
+        .unwrap();
+    fp.advance(30.0);
+    assert!(!fp.tg.breaker, "reverse power relay opens the breaker");
+    c.tick(60.0, &fp);
+    assert!(c.bills.penalties > 1e6, "penalty {}", c.bills.penalties);
+    assert!(c.money < before);
+    // Operator-opened breaker is not penalised.
+    let mut fp = Pwr::full_power();
+    let pen = c.bills.penalties;
+    c.tick(60.0, &fp);
+    fp.command(
+        &nr_api::Command::SetGeneratorBreaker { closed: false },
+        &nr_api::Origin::Operator,
+    )
+    .unwrap();
+    c.tick(60.0, &fp);
+    assert_eq!(c.bills.penalties, pen);
+    // Diesel fuel.
+    assert!(c.buy_diesel_fuel(&mut plant).is_err(), "tanks start full");
+    plant.elec.diesels[0].fuel_l = 0.0;
+    let q = c.diesel_fuel_quote(&plant);
+    assert!(q > 10_000.0);
+    c.buy_diesel_fuel(&mut plant).unwrap();
+    assert_eq!(
+        plant.elec.diesels[0].fuel_l,
+        plant.elec.diesels[0].fuel_capacity_l
+    );
 }

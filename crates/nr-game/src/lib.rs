@@ -109,6 +109,50 @@ pub struct Notification {
     pub text: String,
 }
 
+/// Running costs accrued over a calendar month and billed at month end.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Bills {
+    /// Nuclear fuel burn-up (thermal energy produced).
+    pub fuel: f64,
+    /// Cooling water abstraction and make-up.
+    pub water: f64,
+    /// Electricity imported from the grid for station service.
+    pub grid_power: f64,
+    /// Equipment upkeep.
+    pub maintenance: f64,
+    /// Operating staff.
+    pub staff: f64,
+    /// Diesel fuel deliveries.
+    pub diesel_fuel: f64,
+    /// Fines and grid penalties (charged when incurred; listed for reference).
+    pub penalties: f64,
+}
+
+impl Bills {
+    /// Amount still to be charged on the statement.
+    pub fn payable(&self) -> f64 {
+        self.fuel + self.water + self.grid_power + self.maintenance + self.staff
+    }
+}
+
+/// Monthly statement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Statement {
+    pub month: String,
+    pub bills: Bills,
+    pub revenue: f64,
+}
+
+/// Fuel cost per MWh thermal.
+const FUEL_PER_MWH_T: f64 = 1.9;
+/// Cooling water per CW pump-hour, and base make-up per hour.
+const WATER_PER_PUMP_H: f64 = 260.0;
+const WATER_BASE_H: f64 = 45.0;
+/// Retail markup on imported station power.
+const IMPORT_MARKUP: f64 = 1.6;
+/// Diesel fuel price per litre.
+pub const DIESEL_PER_L: f64 = 1.1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Career {
     pub start_year: i32,
@@ -128,6 +172,19 @@ pub struct Career {
     pub research: Vec<ResearchProject>,
     announced: BTreeSet<Unlock>,
     pub notifications: Vec<Notification>,
+    /// Costs accrued so far this month.
+    #[serde(default)]
+    pub bills: Bills,
+    #[serde(default)]
+    pub month_revenue: f64,
+    #[serde(default)]
+    pub statements: Vec<Statement>,
+    #[serde(default)]
+    month_key: u32,
+    #[serde(default)]
+    was_online: bool,
+    #[serde(default)]
+    last_net_mw: f64,
 }
 
 /// Purchase quote shown in the shop.
@@ -168,6 +225,12 @@ impl Career {
             research: Vec::new(),
             announced: BTreeSet::new(),
             notifications: Vec::new(),
+            bills: Bills::default(),
+            month_revenue: 0.0,
+            statements: Vec::new(),
+            month_key: 0,
+            was_online: false,
+            last_net_mw: 0.0,
         };
         // Everything already available at the start is not news.
         for u in Unlock::all() {
@@ -203,10 +266,93 @@ impl Career {
         format!("31 Dec {}", self.year())
     }
 
+    /// Months since January of the start year.
+    fn month_index(&self) -> u32 {
+        let years = (self.elapsed_days / DAYS_PER_YEAR).floor() as u32;
+        let mut day = (self.elapsed_days % DAYS_PER_YEAR).floor() as u32;
+        let mut m = 0;
+        for (_, len) in MONTHS {
+            if day < len {
+                break;
+            }
+            day -= len;
+            m += 1;
+        }
+        years * 12 + m.min(11)
+    }
+
+    fn month_name(index: u32, start_year: i32) -> String {
+        format!(
+            "{} {}",
+            MONTHS[(index % 12) as usize].0,
+            start_year + (index / 12) as i32
+        )
+    }
+
+    /// Bill the month's accrued running costs.
+    fn close_month(&mut self) {
+        let bills = std::mem::take(&mut self.bills);
+        let due = bills.payable();
+        self.money -= due;
+        self.costs_total += due;
+        let month = Self::month_name(self.month_key, self.start_year);
+        let m = |v: f64| v / 1e6;
+        self.notify(format!(
+            "Monthly statement {month}: fuel ${:.2}M, water ${:.2}M, grid power ${:.2}M, maintenance ${:.2}M, staff ${:.2}M — ${:.2}M charged. Revenue ${:.2}M.",
+            m(bills.fuel),
+            m(bills.water),
+            m(bills.grid_power),
+            m(bills.maintenance),
+            m(bills.staff),
+            m(due),
+            m(self.month_revenue)
+        ));
+        self.statements.push(Statement {
+            month,
+            bills,
+            revenue: self.month_revenue,
+        });
+        if self.statements.len() > 36 {
+            self.statements.remove(0);
+        }
+        self.month_revenue = 0.0;
+    }
+
+    /// Price to refill both emergency diesel fuel tanks.
+    pub fn diesel_fuel_quote(&self, plant: &Pwr) -> f64 {
+        plant
+            .elec
+            .diesels
+            .iter()
+            .map(|d| (d.fuel_capacity_l - d.fuel_l).max(0.0))
+            .sum::<f64>()
+            * DIESEL_PER_L
+    }
+
+    /// Order a diesel fuel delivery (fills both tanks).
+    pub fn buy_diesel_fuel(&mut self, plant: &mut Pwr) -> Result<(), String> {
+        let cost = self.diesel_fuel_quote(plant);
+        if cost < 1.0 {
+            return Err("diesel fuel tanks are already full".into());
+        }
+        if cost > self.money {
+            return Err("not enough money".into());
+        }
+        self.money -= cost;
+        self.costs_total += cost;
+        self.bills.diesel_fuel += cost;
+        for d in &mut plant.elec.diesels {
+            d.fuel_l = d.fuel_capacity_l;
+        }
+        self.notify(format!("Diesel fuel delivered: ${:.0}k", cost / 1e3));
+        Ok(())
+    }
+
     /// Charge a fine (e.g. synchronising without grid permission).
     pub fn fine(&mut self, amount: f64, why: &str) {
         self.money -= amount;
         self.costs_total += amount;
+        self.bills.penalties += amount;
         self.notify(format!("Fine ${:.2}M: {why}", amount / 1e6));
     }
 
@@ -565,15 +711,39 @@ impl Career {
         let days = dt / DAY;
         let year_before = self.year();
         self.elapsed_days += days;
-        let net_mw = plant.gross_mwe - plant.p.house_load_mwe;
+        let hours = dt / 3600.0;
+        let net_mw = plant.gross_mwe - plant.house_load();
         if plant.tg.breaker && net_mw > 0.0 {
-            let revenue = net_mw * dt / 3600.0 * self.price_mwh * revenue_mult;
+            let revenue = net_mw * hours * self.price_mwh * revenue_mult;
             self.money += revenue;
             self.revenue_total += revenue;
+            self.month_revenue += revenue;
         }
-        let om = self.om_per_day * days;
-        self.money -= om;
-        self.costs_total += om;
+        // Accrue running costs; they are billed at the end of the month.
+        let b = &mut self.bills;
+        b.fuel += plant.q_core.max(0.0) / 1e6 * hours * FUEL_PER_MWH_T;
+        let cw = plant.condenser.cw_pumps.iter().filter(|r| **r).count() as f64;
+        b.water += (WATER_BASE_H + WATER_PER_PUMP_H * cw) * hours;
+        b.grid_power += plant.elec.import_mw * hours * self.price_mwh * IMPORT_MARKUP;
+        b.maintenance += 0.6 * self.om_per_day * days;
+        b.staff += 0.4 * self.om_per_day * days;
+        // Unplanned loss of generation: the grid operator penalises the
+        // sudden loss of the unit's output.
+        if self.was_online && !plant.tg.breaker && !plant.breaker_opened_by_operator {
+            let lost = self.last_net_mw.max(0.0);
+            let penalty = 100_000.0 + 1_500.0 * lost;
+            self.fine(
+                penalty,
+                &format!("unplanned loss of {lost:.0} MWe from the grid"),
+            );
+        }
+        self.was_online = plant.tg.breaker;
+        self.last_net_mw = net_mw;
+        let key = self.month_index();
+        if key != self.month_key {
+            self.close_month();
+            self.month_key = key;
+        }
 
         let mut finished = Vec::new();
         for r in &mut self.research {
@@ -618,6 +788,9 @@ impl Career {
             costs_total: self.costs_total,
             missing_components: self.missing_components(),
             notifications: self.notifications.iter().rev().take(60).cloned().collect(),
+            bills: self.bills.clone(),
+            month_revenue: self.month_revenue,
+            statements: self.statements.iter().rev().take(12).cloned().collect(),
             research: self.research.clone(),
             research_options: self.research_options(),
             shop: self.shop(),
@@ -687,6 +860,9 @@ pub struct CareerView {
     pub costs_total: f64,
     pub missing_components: Vec<Slot>,
     pub notifications: Vec<Notification>,
+    pub bills: Bills,
+    pub month_revenue: f64,
+    pub statements: Vec<Statement>,
     pub research: Vec<ResearchProject>,
     pub research_options: Vec<ResearchOption>,
     pub shop: Shop,
