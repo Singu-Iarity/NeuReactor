@@ -1,6 +1,7 @@
 //! Operator / plugin commands.
 
 use crate::modules::{ModuleId, ModuleMode};
+use crate::upgrades::UpgradeId;
 use serde::{Deserialize, Serialize};
 
 /// A plant actuator group. Each is owned by at most one automation module.
@@ -177,6 +178,16 @@ pub enum Command {
         enabled: bool,
     },
     RepairGenerator,
+    /// Install / remove an automation module (sandbox; career buys them).
+    SetModuleInstalled {
+        module: ModuleId,
+        installed: bool,
+    },
+    /// Install / remove an I&C hardware upgrade (sandbox; career buys them).
+    SetUpgradeInstalled {
+        upgrade: UpgradeId,
+        installed: bool,
+    },
     SetControlRoom {
         generation: ControlRoomGeneration,
     },
@@ -227,6 +238,8 @@ impl Command {
             C::InjectSensorFault { .. }
             | C::SetTrainingMode { .. }
             | C::RepairGenerator
+            | C::SetModuleInstalled { .. }
+            | C::SetUpgradeInstalled { .. }
             | C::SetControlRoom { .. }
             | C::LoadScenario { .. } => CommandKind::Scenario,
         }

@@ -2,7 +2,7 @@
    body[data-room="analog"]  : 1980s board — tan panels, white-face meters, red LED readouts.
    body[data-room="digital"] : modernised board — light grey panels, green readouts, LED synchroscope. */
 
-:root, body[data-room="analog"] {
+:root, [data-gen="analog"] {
   --room: #2b2721;
   --panel: #d6c8a8;
   --panel-2: #c8b993;
@@ -28,7 +28,7 @@
   --seg-font: "DejaVu Sans Mono", ui-monospace, monospace;
 }
 
-body[data-room="digital"] {
+[data-gen="digital"] {
   --room: #1d2124;
   --panel: #dcdfe0;
   --panel-2: #cbcfd1;
@@ -61,7 +61,14 @@ body {
   min-height: 100vh;
 }
 button { font: inherit; cursor: pointer; }
-body[data-room="analog"] .only-digital, body[data-room="digital"] .only-analog { display: none !important; }
+/* Each board section carries data-gen from its hardware package, so one tab
+   can mix original analog sections with modernised ones. */
+[data-gen="analog"] .only-digital, [data-gen="digital"] .only-analog { display: none !important; }
+.sect[data-gen="digital"], .panel-head[data-gen="digital"] { background: var(--panel); color: var(--ink); }
+.panel-head { border-radius: 6px; padding: 8px; }
+.panel-head[data-gen="analog"] { background: transparent; }
+.sect .gen-tag { float: right; font-size: 9px; font-weight: 800; letter-spacing: .08em; padding: 2px 6px; border-radius: 3px; background: #000; color: #e8b23a; }
+.sect[data-gen="digital"] .gen-tag { color: var(--seg); }
 
 /* ------------------------------------------------------------- top bar */
 .topbar {
@@ -172,7 +179,7 @@ body[data-room="analog"] .only-digital, body[data-room="digital"] .only-analog {
 .vbar { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .vb-col { position: relative; width: 22px; height: 120px; background: #0d0d0d; border: 2px solid var(--bezel); overflow: hidden; }
 .vb-fill { position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(#e8e4d8, #9d978a); transition: height .25s; }
-body[data-room="digital"] .vb-fill { background: linear-gradient(#5cf2b8, #18a36d); }
+[data-gen="digital"] .vb-fill { background: linear-gradient(#5cf2b8, #18a36d); }
 .vb-tgt { position: absolute; left: 0; right: 0; height: 2px; background: #f5c542; }
 .vb-num { font: 700 12px var(--mono); background: #000; color: var(--seg); padding: 0 4px; min-width: 34px; text-align: center; }
 .vb-label { font-weight: 700; font-size: 11px; }
@@ -266,7 +273,7 @@ body[data-room="digital"] .vb-fill { background: linear-gradient(#5cf2b8, #18a36
 
 /* --------------------------------------------------------- annunciator */
 .annunciator { background: #4a463e; padding: 8px 10px 4px; border-radius: 4px; border: 2px solid #111; display: inline-block; }
-body[data-room="digital"] .annunciator { background: #121416; }
+[data-gen="digital"] .annunciator { background: #121416; }
 .ann-grid { display: grid; grid-template-columns: 16px repeat(var(--cols), minmax(92px, 116px)); gap: 3px; }
 .ann-head { color: #e8e2d0; font-weight: 700; text-align: center; font-size: 13px; }
 .ann-head.row { display: flex; align-items: center; justify-content: center; }
@@ -358,3 +365,18 @@ body[data-room="digital"] .annunciator { background: #121416; }
   .edgewise { min-width: 0; width: 100%; }
   .firstout { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ------------------------------------------------------ equipment cabinet */
+.equip-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); margin-top: 8px; }
+.card.hw { border-left-color: #777; }
+.card.hw.installed { border-left-color: #3bd16a; }
+.card.hw.computer { background: #12202a; }
+.card .kind { font-size: 9px; font-weight: 800; letter-spacing: .08em; color: #e8b23a; }
+.card .secs { font: 10px var(--mono); color: #8fb; margin-top: 4px; }
+.card .req { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; font-size: 10px; }
+.card .req span { padding: 1px 5px; border-radius: 3px; background: #3a1d1a; color: #ff9a8f; }
+.card .req span.ok { background: #16321e; color: #8fe0a5; }
+.inst { background: #333; color: #ccc; border: 1px solid #000; padding: 4px 8px; font-size: 11px; font-weight: 800; border-radius: 3px; }
+.inst.on { background: #3bd16a; color: #000; }
+.inst:disabled { opacity: .4; cursor: not-allowed; }
+.price { font: 11px var(--mono); color: #aaa; }

@@ -29,6 +29,20 @@ cargo run --release -p nr-cli -- bench
 
 Scenarios: `steady`, `scram`, `load-follow`, `rcp-trip`, `xenon`.
 
+## Equipment and upgrades
+
+The **Equipment** tab lists the unit's I&C hardware and automation software.
+- **Computers** run automation.
+- **Panel packages** modernise one area of the board and connect it to its
+  computer.
+- **Automation modules** need their computer *and* panel package to run.
+
+Only the board sections a package covers change to the modern look, so you
+can, for example, run a modern turbine-generator section next to original
+analog reactor panels. In sandbox, toggle each item freely, or use the
+Plant Computer tab presets ORIGINAL PLANT / FULLY MODERNISED. The sandbox
+starts fully modernised.
+
 ## Playing: a reactor startup
 
 The server starts the plant at **hot standby**: no-load temperature and
@@ -57,9 +71,10 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
    - Close the GEN BREAKER as the pointer reaches 12 o'clock.
    - On the analog board an out-of-phase close damages the generator and
      trips it. Badly damaged, it locks out (86G) until repaired.
-   - With the Auto-Synchronizer in AUTO, or a digital control room, the
-     sync-check relay blocks bad closes and lights **PHASE Δ OUT OF RANGE**.
-     In AUTO it also synchronizes by itself.
+   - With the Auto-Synchronizer in AUTO, or the Turbine Control Computer plus
+     the Generator Sync Interface installed, the sync-check relay blocks bad
+     closes and lights **PHASE Δ OUT OF RANGE**. In AUTO it also
+     synchronizes by itself.
 7. **Load the unit.** Raise the governor's MWe setpoint and put rod control
    in AUTO when ready.
 

@@ -23,10 +23,10 @@ export function build(root, ctx) {
   }, ctx);
 
   root.append(h("div", { class: "board" },
-    h("section", { class: "sect wide" }, plate("STEAM GENERATORS"),
+    h("section", { class: "sect wide", "data-section": "steam.sg" }, plate("STEAM GENERATORS"),
       h("div", { class: "row" }, lvl.el, press.el, h("div", { class: "col" }, total.el, steam.el, feed.el, ftemp.el))),
-    h("section", { class: "sect" }, plate("FEEDWATER"), fwMa.el),
-    h("section", { class: "sect" }, plate("STEAM DUMP TO CONDENSER"), dumpMa.el)));
+    h("section", { class: "sect", "data-section": "steam.feed" }, plate("FEEDWATER"), fwMa.el),
+    h("section", { class: "sect", "data-section": "steam.dump" }, plate("STEAM DUMP TO CONDENSER"), dumpMa.el)));
 
   return t => {
     const R = t.readings;

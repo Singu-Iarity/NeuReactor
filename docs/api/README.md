@@ -63,7 +63,9 @@ JSON objects tagged by `type`:
 {"type": "inject_sensor_fault", "tag": "tavg_c", "fault": "stuck"}   // none | stuck | fail_low | fail_high
 {"type": "set_training_mode", "enabled": true}
 {"type": "repair_generator"}                                  // sandbox only
-{"type": "set_control_room", "generation": "digital"}         // analog | digital (sandbox only for now)
+{"type": "set_upgrade_installed", "upgrade": "generator_sync_interface", "installed": true}   // sandbox only
+{"type": "set_module_installed", "module": "generator_sync", "installed": true}               // sandbox only
+{"type": "set_control_room", "generation": "digital"}         // preset: digital = install everything, analog = original plant (sandbox only)
 {"type": "load_scenario", "name": "hot_standby"}              // hot_standby | full_power (sandbox only)
 ```
 
@@ -94,7 +96,8 @@ systems aren't simulated yet.
 
 Besides `readings`, telemetry carries discrete status: `nis` (blocks, SR high
 voltage, P-6/P-10), `generator_breaker`, `field_breaker`, `generator_lockout`,
-`sync_check_active`, `sync_blocked`, `control_room`, `scenario`, `rod_motion`,
+`sync_check_active`, `sync_blocked`, `sections` (board section → analog/digital),
+`upgrades` (installed I&C hardware), `scenario`, `rod_motion`,
 and `alarms` (each with the control room `panel` it belongs to).
 
 See `examples/plugins/telemetry_logger.py` for a complete example.

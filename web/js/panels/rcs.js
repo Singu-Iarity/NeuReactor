@@ -32,12 +32,12 @@ export function build(root, ctx) {
   }));
 
   root.append(h("div", { class: "board" },
-    h("section", { class: "sect wide" }, plate("REACTOR COOLANT SYSTEM"),
+    h("section", { class: "sect wide", "data-section": "rcs.main" }, plate("REACTOR COOLANT SYSTEM"),
       h("div", { class: "row" }, tavg.el, press.el, lvl.el,
         h("div", { class: "col" }, thot.el, tcold.el, dt.el, flow.el))),
-    h("section", { class: "sect" }, plate("PRESSURIZER"),
+    h("section", { class: "sect", "data-section": "rcs.pzr" }, plate("PRESSURIZER"),
       h("div", { class: "row" }, pMa.el, h("div", { class: "col" }, spray.el, sprayRl.el, porv.el))),
-    h("section", { class: "sect" }, plate("REACTOR COOLANT PUMPS"), h("div", { class: "row" }, ...rcps.map(r => r.el)))));
+    h("section", { class: "sect", "data-section": "rcs.rcp" }, plate("REACTOR COOLANT PUMPS"), h("div", { class: "row" }, ...rcps.map(r => r.el)))));
 
   return t => {
     const R = t.readings;

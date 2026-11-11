@@ -58,17 +58,17 @@ export function build(root, ctx) {
   }, ctx);
 
   root.append(h("div", { class: "board" },
-    h("section", { class: "sect wide" }, plate("TURBINE CONTROL"),
+    h("section", { class: "sect wide", "data-section": "turbine.control" }, plate("TURBINE CONTROL"),
       h("div", { class: "row" }, load.el, rpmR.el, steamP.el),
       h("div", { class: "row" }, speed.el, valve.el, h("div", { class: "col" }, fine.el, health.el))),
-    h("section", { class: "sect" }, plate("AUTOMATIC ACCELERATION CONTROL"),
+    h("section", { class: "sect", "data-section": "turbine.accel" }, plate("AUTOMATIC ACCELERATION CONTROL"),
       h("div", { class: "row" }, accel.el, h("div", { class: "presets" }, ...presets.map(p => p.el))),
       h("div", { class: "row" }, gov.el, h("div", { class: "col" }, ramp.el, h("div", { class: "row tight" }, trip.el, latch.el)))),
-    h("section", { class: "sect" }, plate("GENERATOR SYNCHRONIZING"),
+    h("section", { class: "sect", "data-section": "turbine.sync" }, plate("GENERATOR SYNCHRONIZING"),
       h("div", { class: "row" }, scope.el,
         h("div", { class: "col" }, genV.el, busV.el, genF.el, busF.el)),
       h("div", { class: "row" }, h("div", { class: "col center" }, breaker.el, phaseWin, syncCheck.el), syncMa.el)),
-    h("section", { class: "sect" }, plate("EXCITATION"), h("div", { class: "row" }, field.el, avr.el))));
+    h("section", { class: "sect", "data-section": "turbine.excitation" }, plate("EXCITATION"), h("div", { class: "row" }, field.el, avr.el))));
 
   return t => {
     const R = t.readings;

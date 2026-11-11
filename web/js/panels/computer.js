@@ -31,15 +31,15 @@ export function build(root, ctx) {
   const plugins = h("div", { class: "plugins" });
   const sc = (name, label) => pushbutton(label, { onPress: () => { if (confirm(`Load scenario "${label}"? The current plant state is discarded.`)) ctx.send({ type: "load_scenario", name }); } });
   const hs = sc("hot_standby", "HOT STANDBY"), fp = sc("full_power", "FULL POWER");
-  const analog = pushbutton("ANALOG ROOM", { onPress: () => ctx.send({ type: "set_control_room", generation: "analog" }) });
-  const digital = pushbutton("DIGITAL ROOM", { onPress: () => ctx.send({ type: "set_control_room", generation: "digital" }) });
+  const analog = pushbutton("ORIGINAL PLANT", { onPress: () => { if (confirm("Strip the unit back to its original analog, manual equipment?")) ctx.send({ type: "set_control_room", generation: "analog" }); } });
+  const digital = pushbutton("FULLY MODERNISED", { onPress: () => ctx.send({ type: "set_control_room", generation: "digital" }) });
   const training = pushbutton("TRAINING MODE", { color: "amber", onPress: () => ctx.send({ type: "set_training_mode", enabled: !ctx.t().training_mode }) });
   const repair = pushbutton("REPAIR GENERATOR", { onPress: () => ctx.send({ type: "repair_generator" }) });
 
   root.append(h("div", { class: "board" },
-    h("section", { class: "sect wide" }, plate("RECORDERS"), h("div", { class: "row" }, ...recs.map(r => r.el))),
-    h("section", { class: "sect" }, plate("EVENT LOG"), events),
-    h("section", { class: "sect" }, plate("SANDBOX / INSTRUCTOR STATION"),
+    h("section", { class: "sect wide", "data-section": "computer.recorders" }, plate("RECORDERS"), h("div", { class: "row" }, ...recs.map(r => r.el))),
+    h("section", { class: "sect", "data-section": "computer.log" }, plate("EVENT LOG"), events),
+    h("section", { class: "sect", "data-section": "computer.instructor" }, plate("SANDBOX / INSTRUCTOR STATION"),
       h("div", { class: "row tight" }, hs.el, fp.el, analog.el, digital.el, training.el, repair.el),
       plate("PLUGINS", "small"), plugins)));
 
@@ -80,7 +80,7 @@ export function build(root, ctx) {
     for (const r of recs) r.push(t.sim_time, t.readings);
     if (visible) recs.forEach(r => r.draw());
     hs.update(t.scenario === "hot_standby"); fp.update(t.scenario === "full_power");
-    analog.update(t.control_room === "analog"); digital.update(t.control_room === "digital");
+    analog.update(t.upgrades.every(u => !u.installed)); digital.update(t.upgrades.every(u => u.installed));
     training.update(t.training_mode);
     repair.update(false, t.readings.generator_health_pct >= 100);
     if (t.game_mode === "career") [hs, fp, analog, digital, training, repair].forEach(b => b.update(false, true));

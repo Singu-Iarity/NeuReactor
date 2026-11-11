@@ -8,7 +8,7 @@ import * as rcs from "./panels/rcs.js";
 import * as cvcs from "./panels/cvcs.js";
 import * as steam from "./panels/steam.js";
 import * as turbine from "./panels/turbine.js";
-import * as automation from "./panels/automation.js";
+import * as automation from "./panels/equipment.js";
 import * as computer from "./panels/computer.js";
 
 const PANELS = [reactor, rcs, cvcs, steam, turbine, automation, computer];
@@ -85,7 +85,7 @@ for (const P of PANELS) {
   const tab = h("button", { class: "tab", "data-tab": P.id, onclick: () => select(P.id) }, P.title);
   tabs.append(tab);
   const body = h("div", { class: "panel-body" });
-  const head = h("div", { class: "panel-head" });
+  const head = h("div", { class: "panel-head", "data-section": `${P.id}.alarms` });
   if (P.windows.length) {
     const a = annunciatorPanel(`${P.title.toUpperCase()} INDICATOR PANEL`, P.windows);
     a.cells.forEach((cell, tag) => annCells.set(tag, cell));
@@ -127,7 +127,10 @@ function fmtTime(s) {
 
 function render() {
   const t = telemetry;
-  document.body.dataset.room = t.control_room;
+  // Each board section takes the look of its installed hardware package.
+  document.querySelectorAll(".sect, .panel-head").forEach(el => {
+    el.dataset.gen = t.sections[el.dataset.section] || "analog";
+  });
   $("#unit").textContent = `${t.unit} · ${t.reactor_type} · ${t.game_mode.toUpperCase()} · ${t.scenario.replace("_", " ").toUpperCase()}`;
   $("#simtime").textContent = fmtTime(t.sim_time);
   document.querySelectorAll("#timectl button").forEach(b => {

@@ -24,8 +24,8 @@ export function build(root, ctx) {
   const ppm = readout("BORON [ppm]", { digits: 0 });
 
   root.append(h("div", { class: "board" },
-    h("section", { class: "sect" }, plate("BORON CONCENTRATION CONTROL"), h("div", { class: "row" }, boron.el, h("div", { class: "col" }, ppm.el, mode.el), bMa.el)),
-    h("section", { class: "sect" }, plate("CHARGING & LETDOWN"), h("div", { class: "row" }, chMa.el, h("div", { class: "col" }, charging.el, letdown.el, ldRl.el)))));
+    h("section", { class: "sect", "data-section": "cvcs.boron" }, plate("BORON CONCENTRATION CONTROL"), h("div", { class: "row" }, boron.el, h("div", { class: "col" }, ppm.el, mode.el), bMa.el)),
+    h("section", { class: "sect", "data-section": "cvcs.charging" }, plate("CHARGING & LETDOWN"), h("div", { class: "row" }, chMa.el, h("div", { class: "col" }, charging.el, letdown.el, ldRl.el)))));
 
   return t => {
     const R = t.readings;

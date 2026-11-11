@@ -23,6 +23,24 @@
    actuators: MANUAL means the operator, AUTO means the built-in controller,
    EXTERNAL means an approved plugin.
 
+## Equipment: computers, panel packages, automation modules
+
+A unit's I&C is built up from three kinds of equipment. Sandbox lets you
+toggle each item; career mode will buy them.
+
+| Layer | Examples | What it does |
+|---|---|---|
+| **Computer** (`nr_api::upgrades`, kind `computer`) | Plant Process Computer, Turbine Control Computer | Runs automation software. Cannot see or drive any panel on its own. |
+| **Panel package** (`kind: panel_package`) | Generator Sync Interface, Turbine Control Panel Package, Digital NIS | Replaces one board area's original analog equipment with modern controls/displays and wires it to its computer. Covers specific board sections (`"turbine.sync"`), so only those sections change look. |
+| **Automation module** (`nr_api::modules`) | Auto-Synchronizer, Turbine Governor, Feedwater Level | Software for one subsystem. Runs in AUTO/EXT only if installed **and** its `requires_upgrades` (its computer + its panel package) are installed. |
+
+Hardware can also change behaviour: with the Turbine Control Computer *and*
+the Generator Sync Interface, the sync-check relay is permanent, so bad
+breaker closes are always blocked. Removing a computer or package drops
+every module that depends on it to MANUAL. Telemetry reports
+`sections: {"turbine.sync": "digital", ...}`, and the UI themes each
+`data-section` independently.
+
 ## Data flow
 
 ```

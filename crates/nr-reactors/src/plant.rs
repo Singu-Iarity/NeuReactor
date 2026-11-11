@@ -1,13 +1,16 @@
 //! Reactor-type independent plant bookkeeping: automation module state and
 //! the event log.
 
-use nr_api::{GameMode, ModuleId, ModuleMode, Severity};
+use nr_api::{modules, GameMode, ModuleId, ModuleMode, Severity, UpgradeId};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 pub struct AutomationState {
     pub game_mode: GameMode,
+    /// Installed automation modules.
     pub owned: BTreeSet<ModuleId>,
+    /// Installed I&C hardware upgrades.
+    pub upgrades: BTreeSet<UpgradeId>,
     pub modes: BTreeMap<ModuleId, ModuleMode>,
     pub setpoints: BTreeMap<ModuleId, BTreeMap<String, f64>>,
 }
@@ -16,7 +19,11 @@ impl AutomationState {
     pub fn new() -> Self {
         let mut s = Self {
             game_mode: GameMode::Sandbox,
-            owned: BTreeSet::new(),
+            // Sandbox default: fully equipped unit. The instructor station can
+            // strip it back to the original analog/manual plant or toggle
+            // individual items; career starts from the original plant.
+            owned: modules::CATALOG.iter().map(|m| m.id).collect(),
+            upgrades: nr_api::upgrades::CATALOG.iter().map(|u| u.id).collect(),
             modes: BTreeMap::new(),
             setpoints: BTreeMap::new(),
         };

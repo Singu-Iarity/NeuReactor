@@ -2,7 +2,7 @@
 
 use crate::Pwr;
 use nr_api::{
-    Command, ControlRoomGeneration, ModuleId, ModuleMode, NisBlock, Origin, RodDirection,
+    Command, ControlRoomGeneration, ModuleId, ModuleMode, NisBlock, Origin, RodDirection, UpgradeId,
 };
 
 fn op(p: &mut Pwr, c: Command) {
@@ -179,6 +179,14 @@ fn wait_for_phase(p: &mut Pwr, lo: f64, hi: f64) {
 #[test]
 fn analog_out_of_phase_close_damages_and_trips() {
     let mut p = startup_to_sync();
+    // Original analog synchroscope panel: no sync-check relay.
+    op(
+        &mut p,
+        Command::SetUpgradeInstalled {
+            upgrade: UpgradeId::GeneratorSyncInterface,
+            installed: false,
+        },
+    );
     assert!(!p.sync_check_active());
     // Make the synchroscope turn so the phase sweeps.
     op(
@@ -232,14 +240,48 @@ fn sync_check_blocks_and_lamp_flashes() {
 }
 
 #[test]
-fn digital_control_room_has_sync_check() {
+fn generator_sync_interface_has_permanent_sync_check() {
     let mut p = startup_to_sync();
-    op(
-        &mut p,
-        Command::SetControlRoom {
-            generation: ControlRoomGeneration::Digital,
-        },
-    );
+    let up = |p: &mut Pwr, u, i| {
+        op(
+            p,
+            Command::SetUpgradeInstalled {
+                upgrade: u,
+                installed: i,
+            },
+        )
+    };
+    // Fully equipped sandbox: computer + sync package => sync-check.
+    assert!(p.sync_check_active());
+    // Without the sync panel package the computer cannot reach the breaker.
+    up(&mut p, UpgradeId::GeneratorSyncInterface, false);
+    assert!(!p.sync_check_active());
+    // Package alone (computer removed): still no sync-check.
+    up(&mut p, UpgradeId::TurbineControlComputer, false);
+    up(&mut p, UpgradeId::GeneratorSyncInterface, true);
+    assert!(!p.sync_check_active());
+    // Computer + package again.
+    up(&mut p, UpgradeId::TurbineControlComputer, true);
+    assert!(p.sync_check_active());
+    // Strip the turbine control panel package only: that section reverts to
+    // analog while the sync section stays modern.
+    up(&mut p, UpgradeId::TurbinePanelInterface, false);
+    up(&mut p, UpgradeId::DigitalNis, false);
+    let t = p.telemetry(1.0, false);
+    assert_eq!(t.sections["turbine.sync"], ControlRoomGeneration::Digital);
+    assert_eq!(t.sections["turbine.control"], ControlRoomGeneration::Analog);
+    assert_eq!(t.sections["reactor.nis"], ControlRoomGeneration::Analog);
+    // Governor auto needs its panel package back for the rest of the test.
+    up(&mut p, UpgradeId::TurbinePanelInterface, true);
+    for m in [ModuleId::TurbineGovernor, ModuleId::Excitation] {
+        op(
+            &mut p,
+            Command::SetModuleMode {
+                module: m,
+                mode: ModuleMode::Auto,
+            },
+        );
+    }
     op(
         &mut p,
         Command::SetSetpoint {
@@ -297,4 +339,96 @@ fn generator_repair_clears_lockout() {
     p.tg.lockout = true;
     op(&mut p, Command::RepairGenerator);
     assert!(!p.tg.lockout && p.tg.health == 100.0);
+}
+
+#[test]
+fn removing_modules_and_hardware_in_sandbox() {
+    let mut p = Pwr::full_power();
+    // Computer without the feedwater panel package cannot run feedwater auto.
+    op(
+        &mut p,
+        Command::SetUpgradeInstalled {
+            upgrade: UpgradeId::DigitalFeedwater,
+            installed: false,
+        },
+    );
+    assert_eq!(
+        p.automation.mode(ModuleId::FeedwaterLevel),
+        ModuleMode::Manual
+    );
+    let fw = Command::SetModuleMode {
+        module: ModuleId::FeedwaterLevel,
+        mode: ModuleMode::Auto,
+    };
+    assert!(p.command(&fw, &Origin::Operator).is_err());
+    op(
+        &mut p,
+        Command::SetUpgradeInstalled {
+            upgrade: UpgradeId::DigitalFeedwater,
+            installed: true,
+        },
+    );
+    // Uninstalling a module that is in AUTO drops it to MANUAL first.
+    op(
+        &mut p,
+        Command::SetModuleInstalled {
+            module: ModuleId::FeedwaterLevel,
+            installed: false,
+        },
+    );
+    assert_eq!(
+        p.automation.mode(ModuleId::FeedwaterLevel),
+        ModuleMode::Manual
+    );
+    let auto = Command::SetModuleMode {
+        module: ModuleId::FeedwaterLevel,
+        mode: ModuleMode::Auto,
+    };
+    assert!(p.command(&auto, &Origin::Operator).is_err());
+    op(
+        &mut p,
+        Command::SetModuleInstalled {
+            module: ModuleId::FeedwaterLevel,
+            installed: true,
+        },
+    );
+    op(&mut p, auto);
+    // Removing the turbine computer drops the turbine-side automation.
+    op(
+        &mut p,
+        Command::SetUpgradeInstalled {
+            upgrade: UpgradeId::TurbineControlComputer,
+            installed: false,
+        },
+    );
+    assert_eq!(
+        p.automation.mode(ModuleId::TurbineGovernor),
+        ModuleMode::Manual
+    );
+    assert_eq!(p.automation.mode(ModuleId::Excitation), ModuleMode::Manual);
+    // Original plant preset strips everything; it survives a scenario reload.
+    op(
+        &mut p,
+        Command::SetControlRoom {
+            generation: ControlRoomGeneration::Analog,
+        },
+    );
+    assert!(p.automation.upgrades.is_empty() && p.automation.owned.is_empty());
+    op(
+        &mut p,
+        Command::LoadScenario {
+            name: "hot_standby".into(),
+        },
+    );
+    assert!(p.automation.upgrades.is_empty());
+    assert!(p
+        .automation
+        .modes
+        .values()
+        .all(|m| *m == ModuleMode::Manual));
+    let t = p.telemetry(1.0, false);
+    assert!(t
+        .sections
+        .values()
+        .all(|g| *g == ControlRoomGeneration::Analog));
 }

@@ -54,17 +54,17 @@ export function build(root, ctx) {
 
   root.append(
     h("div", { class: "board" },
-      h("section", { class: "sect wide" }, plate("NUCLEAR INSTRUMENTATION"),
+      h("section", { class: "sect wide", "data-section": "reactor.nis" }, plate("NUCLEAR INSTRUMENTATION"),
         h("div", { class: "row" },
           h("div", { class: "col" }, sr.el, srSur.el, h("div", { class: "row tight" }, hvLamp.el, srBlk.el, srRst.el, spk.el)),
           h("div", { class: "col" }, ir.el, irSur.el, h("div", { class: "row tight" }, p6Lamp.el, irBlk.el, irRst.el)),
           h("div", { class: "col" }, ...pr.map(p => p.el), h("div", { class: "row tight" }, p10Lamp.el, prBlk.el, prRst.el)),
           h("div", { class: "col" }, avg.el, period.el, rho.el, mwt.el))),
-      h("section", { class: "sect" }, plate("ROD CONTROL"),
+      h("section", { class: "sect", "data-section": "reactor.rods" }, plate("ROD CONTROL"),
         h("div", { class: "rods" }, ...bars.map(b => b.el)),
         h("div", { class: "row" }, sel.el, lever.el, rodMa.el),
         h("div", { class: "row tight" }, rxReset.el, ctx.scramPair())),
-      h("section", { class: "sect" }, plate("REACTOR TRIP FIRST OUT"), fo)));
+      h("section", { class: "sect", "data-section": "reactor.firstout" }, plate("REACTOR TRIP FIRST OUT"), fo)));
 
   return t => {
     const R = t.readings;

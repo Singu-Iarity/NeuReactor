@@ -3,6 +3,7 @@
 use crate::commands::{BorationMode, ControlRoomGeneration};
 use crate::modules::{ModuleId, ModuleMode};
 use crate::policy::GameMode;
+use crate::upgrades::UpgradeId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -48,6 +49,18 @@ pub struct NisView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpgradeView {
+    pub id: UpgradeId,
+    pub kind: crate::upgrades::UpgradeKind,
+    pub computer: Option<UpgradeId>,
+    pub name: String,
+    pub description: String,
+    pub price: u64,
+    pub sections: Vec<String>,
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleView {
     pub id: ModuleId,
     pub name: String,
@@ -55,6 +68,8 @@ pub struct ModuleView {
     pub mode: ModuleMode,
     pub owned: bool,
     pub implemented: bool,
+    pub price: u64,
+    pub requires_upgrades: Vec<UpgradeId>,
     pub setpoints: BTreeMap<String, f64>,
 }
 
@@ -82,7 +97,10 @@ pub struct Telemetry {
     /// "PHASE Δ OUT OF RANGE" lamp (a close was just blocked).
     pub sync_blocked: bool,
     pub nis: NisView,
-    pub control_room: ControlRoomGeneration,
+    /// Generation of every control board section that an upgrade can
+    /// modernise (`"turbine.sync" -> digital`). Sections not listed are analog.
+    pub sections: BTreeMap<String, ControlRoomGeneration>,
+    pub upgrades: Vec<UpgradeView>,
     pub scenario: String,
     pub boration: BorationMode,
     pub reactor_tripped: bool,

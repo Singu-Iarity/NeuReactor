@@ -371,7 +371,7 @@ export function recorder(title, pens, { width = 360, height = 180, span = 600 } 
     draw() {
       const ctx = cv.getContext("2d");
       const W = cv.width, H = cv.height;
-      const room = document.body.dataset.room;
+      const room = cv.closest("[data-gen]")?.dataset.gen;
       ctx.fillStyle = room === "digital" ? "#0b1410" : "#f4f0e2";
       ctx.fillRect(0, 0, W, H);
       ctx.strokeStyle = room === "digital" ? "#1f3a2c" : "#c9b98f";
@@ -458,8 +458,14 @@ export function maStation(title, cfg, ctx) {
       mBtn.classList.toggle("lit", mode === "manual");
       aBtn.classList.toggle("lit", mode === "auto");
       el.classList.toggle("ext", mode === "external");
-      el.classList.toggle("not-owned", m ? !m.owned : false);
-      status.textContent = mode === "external" ? "EXTERNAL (plugin)" : m && !m.owned ? "NOT INSTALLED" : "";
+      const missing = (m?.requires_upgrades ?? []).filter(u => !t.upgrades.find(x => x.id === u)?.installed);
+      const unavailable = (m && !m.owned) || missing.length > 0;
+      el.classList.toggle("not-owned", unavailable);
+      aBtn.disabled = unavailable;
+      status.textContent = mode === "external" ? "EXTERNAL (plugin)"
+        : m && !m.owned ? "MODULE NOT INSTALLED"
+        : missing.length ? "NO COMPUTER LINK" : "";
+      status.title = missing.map(u => t.upgrades.find(x => x.id === u)?.name).join(", ");
     },
   };
 }

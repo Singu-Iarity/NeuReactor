@@ -18,7 +18,7 @@ use crate::plant::{AutomationState, PlantEvent};
 use nr_api::{
     authorize, modules, Actuator, Alarm, BorationMode, Command, CommandKind, ControlRoomGeneration,
     Denied, GameMode, ModuleId, ModuleMode, ModuleView, NisBlock, NisView, Origin, PolicyContext,
-    RodDirection, RodView, Severity, Telemetry, API_VERSION,
+    RodDirection, RodView, Severity, Telemetry, UpgradeId, UpgradeView, API_VERSION,
 };
 use nr_control::controllers::{self as ctl, overlap_sequence};
 use nr_control::{Rps, RpsInputs};
@@ -157,7 +157,6 @@ pub struct Pwr {
     pub scenario: String,
     pub time: f64,
     pub training_mode: bool,
-    pub control_room: ControlRoomGeneration,
     rng: Rng,
 
     // Neutronics
@@ -272,7 +271,6 @@ impl Pwr {
             scenario: "full_power".into(),
             time: 0.0,
             training_mode: false,
-            control_room: ControlRoomGeneration::Analog,
             rng: Rng::new(0x5EED),
             kinetics: PointKinetics::equilibrium(DelayedNeutronData::u235_thermal(), 1.0),
             poisons: Poisons::equilibrium(3.0e13, -0.028, -0.007, 1.0),
@@ -546,7 +544,9 @@ impl Pwr {
     }
 
     pub fn sync_check_active(&self) -> bool {
-        self.control_room == ControlRoomGeneration::Digital
+        let hw = &self.automation.upgrades;
+        (hw.contains(&UpgradeId::GeneratorSyncInterface)
+            && hw.contains(&UpgradeId::TurbineControlComputer))
             || self.automation.mode(ModuleId::GeneratorSync) == ModuleMode::Auto
     }
 
@@ -1200,6 +1200,7 @@ impl Pwr {
         PolicyContext {
             mode: self.automation.game_mode,
             owned: self.automation.owned.clone(),
+            upgrades: self.automation.upgrades.clone(),
             module_modes: self.automation.modes.clone(),
         }
     }
@@ -1381,10 +1382,21 @@ impl Pwr {
                     .push(PlantEvent::info("Generator repaired, 86G lockout reset"));
             }
             Command::SetControlRoom { generation } => {
-                self.control_room = *generation;
-                self.events.push(PlantEvent::info(&format!(
-                    "Control room set to {generation:?}"
-                )));
+                // Preset: install everything (fully modernised) or strip the
+                // unit back to its original analog, manual configuration.
+                let modern = *generation == ControlRoomGeneration::Digital;
+                for u in nr_api::upgrades::CATALOG {
+                    self.set_upgrade(u.id, modern);
+                }
+                for m in modules::CATALOG {
+                    self.set_module_installed(m.id, modern);
+                }
+            }
+            Command::SetUpgradeInstalled { upgrade, installed } => {
+                self.set_upgrade(*upgrade, *installed)
+            }
+            Command::SetModuleInstalled { module, installed } => {
+                self.set_module_installed(*module, *installed)
             }
             Command::LoadScenario { name } => {
                 let Some(mut fresh) = Self::from_scenario(name) else {
@@ -1392,7 +1404,12 @@ impl Pwr {
                 };
                 fresh.automation.game_mode = self.automation.game_mode;
                 fresh.automation.owned = self.automation.owned.clone();
-                fresh.control_room = self.control_room;
+                fresh.automation.upgrades = self.automation.upgrades.clone();
+                for (m, mode) in fresh.automation.modes.clone() {
+                    if mode != ModuleMode::Manual && !fresh.automation.owned.contains(&m) {
+                        fresh.automation.modes.insert(m, ModuleMode::Manual);
+                    }
+                }
                 fresh
                     .events
                     .push(PlantEvent::info(&format!("Scenario loaded: {name}")));
@@ -1446,6 +1463,53 @@ impl Pwr {
                 Ok(())
             }
             CloseOutcome::Refused(why) => Err(Denied(why.into())),
+        }
+    }
+
+    fn set_upgrade(&mut self, upgrade: UpgradeId, installed: bool) {
+        let changed = if installed {
+            self.automation.upgrades.insert(upgrade)
+        } else {
+            self.automation.upgrades.remove(&upgrade)
+        };
+        if !changed {
+            return;
+        }
+        if !installed {
+            // Modules that need this hardware lose access and drop to manual.
+            for m in modules::CATALOG {
+                if m.requires_upgrades.contains(&upgrade)
+                    && self.automation.mode(m.id) != ModuleMode::Manual
+                {
+                    self.set_module_mode(m.id, ModuleMode::Manual);
+                    self.events.push(PlantEvent::warn(&format!(
+                        "{} lost its computer link: MANUAL",
+                        m.name
+                    )));
+                }
+            }
+        }
+        let what = if installed { "installed" } else { "removed" };
+        let name = nr_api::upgrades::info(upgrade).name;
+        self.events
+            .push(PlantEvent::info(&format!("{name} {what}")));
+    }
+
+    fn set_module_installed(&mut self, module: ModuleId, installed: bool) {
+        let changed = if installed {
+            self.automation.owned.insert(module)
+        } else {
+            if self.automation.mode(module) != ModuleMode::Manual {
+                self.set_module_mode(module, ModuleMode::Manual);
+            }
+            self.automation.owned.remove(&module)
+        };
+        if changed {
+            let what = if installed { "installed" } else { "removed" };
+            self.events.push(PlantEvent::info(&format!(
+                "{} {what}",
+                modules::info(module).name
+            )));
         }
     }
 
@@ -1766,7 +1830,30 @@ impl Pwr {
                 p6: self.p6(),
                 p10: self.p10(),
             },
-            control_room: self.control_room,
+            sections: nr_api::upgrades::CATALOG
+                .iter()
+                .flat_map(|u| {
+                    let gen = if self.automation.upgrades.contains(&u.id) {
+                        ControlRoomGeneration::Digital
+                    } else {
+                        ControlRoomGeneration::Analog
+                    };
+                    u.sections.iter().map(move |s| (s.to_string(), gen))
+                })
+                .collect(),
+            upgrades: nr_api::upgrades::CATALOG
+                .iter()
+                .map(|u| UpgradeView {
+                    id: u.id,
+                    kind: u.kind,
+                    computer: u.computer,
+                    name: u.name.into(),
+                    description: u.description.into(),
+                    price: u.price,
+                    sections: u.sections.iter().map(|s| s.to_string()).collect(),
+                    installed: self.automation.upgrades.contains(&u.id),
+                })
+                .collect(),
             scenario: self.scenario.clone(),
             boration: self.boration,
             reactor_tripped: self.reactor_tripped,
@@ -1782,6 +1869,8 @@ impl Pwr {
                     mode: self.automation.mode(m.id),
                     owned: ctx.owns(m.id),
                     implemented: m.implemented,
+                    price: m.price,
+                    requires_upgrades: m.requires_upgrades.to_vec(),
                     setpoints: self
                         .automation
                         .setpoints

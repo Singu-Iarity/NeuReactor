@@ -7,7 +7,9 @@
 //! manual commands.
 
 use crate::commands::Actuator;
+use crate::upgrades::UpgradeId;
 use serde::{Deserialize, Serialize};
+use UpgradeId as U;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +54,9 @@ pub struct ModuleInfo {
     /// Career-mode purchase price per unit (USD).
     pub price: u64,
     pub prerequisites: &'static [ModuleId],
+    /// Hardware that must be installed before this module can run: the
+    /// computer it runs on and the panel package of the panel it controls.
+    pub requires_upgrades: &'static [UpgradeId],
     pub actuators: &'static [Actuator],
     /// False while the underlying plant system is not simulated yet.
     pub implemented: bool,
@@ -68,6 +73,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Drives control banks with overlap to hold average coolant temperature on the Tavg program.",
         price: 4_500_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::SolidStateRodControl],
         actuators: &[A::ControlRods],
         implemented: true,
     },
@@ -78,6 +84,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Borates or dilutes slowly to keep the lead control bank inside its target band (xenon and burnup compensation).",
         price: 2_000_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalCvcs],
         actuators: &[A::Boration],
         implemented: true,
     },
@@ -88,6 +95,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Proportional and backup heaters plus spray valves hold RCS pressure at setpoint.",
         price: 1_500_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalRcsControls],
         actuators: &[A::PressurizerHeaters, A::PressurizerSpray],
         implemented: true,
     },
@@ -98,6 +106,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Modulates charging flow to follow the power-programmed pressurizer level.",
         price: 1_200_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalCvcs],
         actuators: &[A::Charging],
         implemented: true,
     },
@@ -108,6 +117,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Starts and stops reactor coolant pumps in the correct order with interlock checks.",
         price: 800_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalRcsControls],
         actuators: &[A::CoolantPumps],
         implemented: false,
     },
@@ -118,6 +128,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Three-element (level, steam flow, feed flow) control of steam generator level.",
         price: 2_500_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalFeedwater],
         actuators: &[A::Feedwater],
         implemented: true,
     },
@@ -128,6 +139,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Holds deaerator level and pegging-steam pressure.",
         price: 900_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalFeedwater],
         actuators: &[A::Deaerator],
         implemented: false,
     },
@@ -138,6 +150,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Air ejectors, vacuum pumps and hotwell makeup/reject.",
         price: 1_000_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalFeedwater],
         actuators: &[A::Condenser],
         implemented: false,
     },
@@ -148,6 +161,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Load-rejection and plant-trip steam dump to the condenser; holds no-load Tavg after a trip.",
         price: 1_300_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalFeedwater],
         actuators: &[A::SteamDump],
         implemented: true,
     },
@@ -158,6 +172,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Ramps governor valves to a target electrical load at a set rate.",
         price: 3_000_000,
         prerequisites: &[],
+        requires_upgrades: &[U::TurbineControlComputer, U::TurbinePanelInterface],
         actuators: &[A::TurbineValves],
         implemented: true,
     },
@@ -168,6 +183,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "In AUTO: blocks out-of-phase breaker closure (sync-check) and automatically matches speed and closes the generator breaker.",
         price: 700_000,
         prerequisites: &[],
+        requires_upgrades: &[U::TurbineControlComputer, U::GeneratorSyncInterface],
         actuators: &[A::GeneratorBreaker],
         implemented: true,
     },
@@ -178,6 +194,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Holds generator terminal voltage by trimming excitation.",
         price: 600_000,
         prerequisites: &[],
+        requires_upgrades: &[U::TurbineControlComputer, U::DigitalExciter],
         actuators: &[A::Exciter],
         implemented: true,
     },
@@ -188,6 +205,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Auto-starts emergency diesels on loss of offsite power and sequences safety loads.",
         price: 1_800_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer],
         actuators: &[A::Diesels],
         implemented: false,
     },
@@ -198,6 +216,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Starts auxiliary feed pumps on low-low SG level or loss of main feed.",
         price: 1_100_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer, U::DigitalFeedwater],
         actuators: &[A::AuxFeedwater],
         implemented: false,
     },
@@ -215,6 +234,7 @@ pub const CATALOG: &[ModuleInfo] = &[
             M::SteamDump,
             M::TurbineGovernor,
         ],
+        requires_upgrades: &[U::PlantProcessComputer, U::TurbineControlComputer],
         actuators: &[],
         implemented: true,
     },
@@ -225,6 +245,7 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Lets an approved plugin drive actuators of modules you own, in place of the built-in controller.",
         price: 2_500_000,
         prerequisites: &[],
+        requires_upgrades: &[U::PlantProcessComputer],
         actuators: &[],
         implemented: true,
     },

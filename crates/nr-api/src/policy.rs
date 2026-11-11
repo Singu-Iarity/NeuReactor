@@ -8,6 +8,7 @@
 
 use crate::commands::{Command, CommandKind};
 use crate::modules::{self, ModuleId, ModuleMode};
+use crate::upgrades::{self, UpgradeId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,22 +51,30 @@ pub enum Origin {
 #[derive(Debug, Clone)]
 pub struct PolicyContext {
     pub mode: GameMode,
-    /// Modules installed on this unit (career). Ignored in sandbox.
+    /// Automation modules installed on this unit.
     pub owned: BTreeSet<ModuleId>,
+    /// I&C hardware upgrades installed on this unit.
+    pub upgrades: BTreeSet<UpgradeId>,
     pub module_modes: BTreeMap<ModuleId, ModuleMode>,
 }
 
 impl PolicyContext {
+    /// Sandbox with every module and upgrade installed.
     pub fn sandbox() -> Self {
         Self {
             mode: GameMode::Sandbox,
-            owned: BTreeSet::new(),
+            owned: modules::CATALOG.iter().map(|m| m.id).collect(),
+            upgrades: upgrades::CATALOG.iter().map(|u| u.id).collect(),
             module_modes: BTreeMap::new(),
         }
     }
 
     pub fn owns(&self, m: ModuleId) -> bool {
-        self.mode == GameMode::Sandbox || self.owned.contains(&m)
+        self.owned.contains(&m)
+    }
+
+    pub fn has_upgrade(&self, u: UpgradeId) -> bool {
+        self.upgrades.contains(&u)
     }
 
     fn mode_of(&self, m: ModuleId) -> ModuleMode {
@@ -113,6 +122,13 @@ pub fn authorize(cmd: &Command, origin: &Origin, ctx: &PolicyContext) -> Result<
             }
             if mode != ModuleMode::Manual && !modules::info(m).implemented {
                 return deny(format!("module {m:?} is not available yet"));
+            }
+            if mode != ModuleMode::Manual {
+                for u in modules::info(m).requires_upgrades {
+                    if !ctx.has_upgrade(*u) {
+                        return deny(format!("{m:?} requires {}", upgrades::info(*u).name));
+                    }
+                }
             }
             if mode == ModuleMode::External && !ctx.owns(ModuleId::ExternalGateway) {
                 return deny("External mode requires the External Control Gateway");
@@ -206,6 +222,7 @@ mod tests {
         PolicyContext {
             mode: GameMode::Career,
             owned: owned.iter().copied().collect(),
+            upgrades: upgrades::CATALOG.iter().map(|u| u.id).collect(),
             module_modes: modes.iter().copied().collect(),
         }
     }
@@ -308,6 +325,50 @@ mod tests {
         assert!(authorize(&ext, &Origin::Operator, &ctx).is_err());
         assert!(authorize(&fw, &Origin::Operator, &ctx).is_err());
         assert!(authorize(&auto, &plugin(&[Scope::ControlWrite]), &ctx).is_err());
+    }
+
+    #[test]
+    fn sandbox_respects_installed_set() {
+        let mut ctx = PolicyContext::sandbox();
+        ctx.owned.remove(&ModuleId::RodControl);
+        let auto = Command::SetModuleMode {
+            module: ModuleId::RodControl,
+            mode: ModuleMode::Auto,
+        };
+        assert!(authorize(&auto, &Origin::Operator, &ctx).is_err());
+        let install = Command::SetModuleInstalled {
+            module: ModuleId::RodControl,
+            installed: true,
+        };
+        assert!(authorize(&install, &Origin::Operator, &ctx).is_ok());
+        let career = PolicyContext {
+            mode: GameMode::Career,
+            ..ctx.clone()
+        };
+        assert!(authorize(&install, &Origin::Operator, &career).is_err());
+    }
+
+    #[test]
+    fn module_hardware_requirement() {
+        let mut ctx = PolicyContext::sandbox();
+        ctx.upgrades.remove(&UpgradeId::TurbineControlComputer);
+        for m in modules::info(ModuleId::PlantMaster).prerequisites {
+            ctx.module_modes.insert(*m, ModuleMode::Auto);
+        }
+        let pm = Command::SetModuleMode {
+            module: ModuleId::PlantMaster,
+            mode: ModuleMode::Auto,
+        };
+        assert!(authorize(&pm, &Origin::Operator, &ctx).is_err());
+        ctx.upgrades.insert(UpgradeId::TurbineControlComputer);
+        assert!(authorize(&pm, &Origin::Operator, &ctx).is_ok());
+        // Computer alone is not enough: the panel package must be there too.
+        ctx.upgrades.remove(&UpgradeId::GeneratorSyncInterface);
+        let sync = Command::SetModuleMode {
+            module: ModuleId::GeneratorSync,
+            mode: ModuleMode::Auto,
+        };
+        assert!(authorize(&sync, &Origin::Operator, &ctx).is_err());
     }
 
     #[test]
