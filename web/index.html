@@ -4,136 +4,33 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NeuReactor Control Room</title>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/css/room.css">
   <script>window.NR_TOKEN = "__OPERATOR_TOKEN__";</script>
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/js/main.js"></script>
 </head>
-<body>
+<body data-room="analog">
   <header class="topbar">
-    <div class="brand">NeuReactor <span id="unit" class="dim"></span></div>
-    <div class="clock">T+ <span id="simtime">0:00:00</span></div>
+    <div class="brand">NeuReactor <span id="conn" class="conn"></span></div>
+    <div id="unit" class="unit"></div>
+    <div class="clock"><span class="clock-label">SIM TIME</span><span id="simtime" class="seg-val">0:00:00</span></div>
     <div class="timectl" id="timectl">
-      <button data-scale="pause">❚❚</button>
+      <button data-scale="pause" title="Pause">❚❚</button>
       <button data-scale="1">1×</button>
-      <button data-scale="10">10×</button>
+      <button data-scale="5">5×</button>
+      <button data-scale="20">20×</button>
       <button data-scale="60">60×</button>
-      <button data-scale="600">600×</button>
+      <button data-scale="300">300×</button>
     </div>
-    <label class="training"><input type="checkbox" id="training"> Training mode</label>
-    <button id="reset" class="btn">Reset trip</button>
-    <button id="scram" class="btn scram">SCRAM</button>
+    <div class="master">
+      <button class="pb-round red" id="master-ack" title="Master acknowledge">ACK</button>
+      <button class="pb-round red" id="master-sil" title="Silence horn">SIL</button>
+      <button class="pb-round white" id="master-rst" title="Reset cleared alarms">RST</button>
+      <button class="pb-round white" id="horn" title="Horn on/off">♪</button>
+    </div>
+    <div id="top-scram"></div>
   </header>
-
-  <section class="annunciators" id="annunciators"></section>
-
-  <main class="grid">
-    <section class="panel" id="p-core">
-      <h2>Reactor</h2>
-      <div class="gauges">
-        <canvas class="gauge" data-tag="nuclear_power_pct" data-min="0" data-max="120" data-label="Power %" width="160" height="120"></canvas>
-        <canvas class="gauge" data-tag="startup_rate_dpm" data-min="-1" data-max="5" data-label="SUR dpm" width="160" height="120"></canvas>
-      </div>
-      <dl class="readouts">
-        <dt>Thermal</dt><dd data-tag="thermal_power_mw" data-fmt="0">–</dd><dd class="u">MWt</dd>
-        <dt>Reactivity</dt><dd data-tag="reactivity_pcm" data-fmt="1">–</dd><dd class="u">pcm</dd>
-        <dt>Boron</dt><dd data-tag="boron_ppm" data-fmt="0">–</dd><dd class="u">ppm</dd>
-        <dt>ΔT</dt><dd data-tag="delta_t_pct" data-fmt="1">–</dd><dd class="u">% full</dd>
-      </dl>
-      <h3>Control rods <span class="badge" data-module="rod_control"></span></h3>
-      <div class="rods" id="rods"></div>
-      <div class="row">
-        <select id="rod-bank"></select>
-        <input id="rod-target" type="number" min="0" max="228" step="1" value="228">
-        <button class="btn" id="rod-move" data-actuator="rod_control">Move</button>
-      </div>
-      <h3>Boration <span class="badge" data-module="boron_control"></span></h3>
-      <div class="row seg" id="boration" data-actuator="boron_control">
-        <button data-mode="dilute">Dilute</button>
-        <button data-mode="off">Off</button>
-        <button data-mode="borate">Borate</button>
-      </div>
-    </section>
-
-    <section class="panel" id="p-primary">
-      <h2>Primary</h2>
-      <div class="gauges">
-        <canvas class="gauge" data-tag="tavg_c" data-min="260" data-max="340" data-label="Tavg °C" data-ref="tref_c" width="160" height="120"></canvas>
-        <canvas class="gauge" data-tag="rcs_pressure_mpa" data-min="12" data-max="18" data-label="Pressure MPa" width="160" height="120"></canvas>
-      </div>
-      <dl class="readouts">
-        <dt>Tref</dt><dd data-tag="tref_c" data-fmt="1">–</dd><dd class="u">°C</dd>
-        <dt>Thot / Tcold</dt><dd><span data-tag="thot_c" data-fmt="1">–</span> / <span data-tag="tcold_c" data-fmt="1">–</span></dd><dd class="u">°C</dd>
-        <dt>RCS flow</dt><dd data-tag="rcs_flow_pct" data-fmt="1">–</dd><dd class="u">%</dd>
-        <dt>PZR level</dt><dd><span data-tag="pzr_level_pct" data-fmt="1">–</span> (prog <span data-tag="pzr_level_program_pct" data-fmt="0">–</span>)</dd><dd class="u">%</dd>
-      </dl>
-      <h3>Pressurizer <span class="badge" data-module="pressurizer_pressure"></span></h3>
-      <label class="slider">Heaters <input type="range" min="0" max="100" data-cmd="set_pressurizer_heaters" data-actuator="pressurizer_pressure" data-read="pzr_heaters_pct"><output></output></label>
-      <label class="slider">Spray <input type="range" min="0" max="100" data-cmd="set_pressurizer_spray" data-actuator="pressurizer_pressure" data-read="pzr_spray_pct"><output></output></label>
-      <h3>CVCS <span class="badge" data-module="pressurizer_level"></span></h3>
-      <label class="slider">Charging <input type="range" min="0" max="20" step="0.5" data-cmd="set_charging" data-key="kg_s" data-actuator="pressurizer_level" data-read="charging_kg_s"><output></output></label>
-      <label class="slider">Letdown <input type="range" min="0" max="15" step="0.5" data-cmd="set_letdown" data-key="kg_s" data-read="letdown_kg_s"><output></output></label>
-      <h3>Reactor coolant pumps</h3>
-      <div class="row" id="rcps"></div>
-    </section>
-
-    <section class="panel" id="p-secondary">
-      <h2>Secondary</h2>
-      <div class="gauges">
-        <canvas class="gauge" data-tag="sg_level_pct" data-min="0" data-max="100" data-label="SG level %" width="160" height="120"></canvas>
-        <canvas class="gauge" data-tag="sg_pressure_mpa" data-min="4" data-max="9" data-label="Steam MPa" width="160" height="120"></canvas>
-      </div>
-      <dl class="readouts">
-        <dt>Steam flow</dt><dd data-tag="steam_flow_kg_s" data-fmt="0">–</dd><dd class="u">kg/s</dd>
-        <dt>Feed flow</dt><dd data-tag="feed_flow_kg_s" data-fmt="0">–</dd><dd class="u">kg/s</dd>
-        <dt>Feed temp</dt><dd data-tag="feed_temp_c" data-fmt="0">–</dd><dd class="u">°C</dd>
-      </dl>
-      <h3>Feedwater <span class="badge" data-module="feedwater_level"></span></h3>
-      <label class="slider">Feed demand <input type="range" min="0" max="100" data-cmd="set_feedwater" data-actuator="feedwater_level" data-read="feed_demand_pct"><output></output></label>
-      <h3>Steam dumps <span class="badge" data-module="steam_dump"></span></h3>
-      <label class="slider">Dump valves <input type="range" min="0" max="100" data-cmd="set_steam_dump" data-actuator="steam_dump" data-read="steam_dump_pct"><output></output></label>
-    </section>
-
-    <section class="panel" id="p-turbine">
-      <h2>Turbine &amp; Generator</h2>
-      <div class="gauges">
-        <canvas class="gauge" data-tag="gross_mwe" data-min="0" data-max="1300" data-label="Gross MWe" width="160" height="120"></canvas>
-      </div>
-      <dl class="readouts">
-        <dt>Net output</dt><dd data-tag="net_mwe" data-fmt="0">–</dd><dd class="u">MWe</dd>
-        <dt>Breaker</dt><dd id="breaker-state">–</dd><dd></dd>
-      </dl>
-      <h3>Governor <span class="badge" data-module="turbine_governor"></span></h3>
-      <label class="slider">Valve <input type="range" min="0" max="100" data-cmd="set_turbine_valve" data-actuator="turbine_governor" data-read="turbine_valve_pct"><output></output></label>
-      <div class="row">
-        <label>Target MWe <input type="number" id="gov-target" min="0" max="1250" step="10"></label>
-        <label>Ramp MW/min <input type="number" id="gov-ramp" min="1" max="200" step="5"></label>
-        <button class="btn" id="gov-set">Set</button>
-      </div>
-      <h3>Generator <span class="badge" data-module="generator_sync"></span></h3>
-      <div class="row">
-        <button class="btn" id="breaker-close" data-actuator="generator_sync">Close breaker</button>
-        <button class="btn" id="breaker-open" data-actuator="generator_sync">Open breaker</button>
-      </div>
-    </section>
-
-    <section class="panel wide" id="p-trend">
-      <h2>Trends</h2>
-      <canvas id="trend" width="900" height="220"></canvas>
-      <div class="legend" id="trend-legend"></div>
-    </section>
-
-    <section class="panel" id="p-modules">
-      <h2>Automation modules</h2>
-      <div id="modules"></div>
-    </section>
-
-    <section class="panel" id="p-log">
-      <h2>Event log</h2>
-      <ol id="events" reversed></ol>
-      <h2>Plugins</h2>
-      <div id="plugins"><p class="dim">No plugins connected.</p></div>
-      <p class="toast" id="toast"></p>
-    </section>
-  </main>
+  <nav class="tabs" id="tabs"></nav>
+  <main id="room"></main>
+  <div id="toast" class="toast"></div>
 </body>
 </html>

@@ -30,14 +30,21 @@ fn mime(p: &Path) -> &'static str {
 }
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web").canonicalize().unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../web")
+        .canonicalize()
+        .unwrap();
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files = Vec::new();
     walk(&root, &mut files);
     let mut src = String::from("pub static WEB_FILES: &[(&str, &str, &[u8])] = &[\n");
     for f in &files {
         println!("cargo:rerun-if-changed={}", f.display());
-        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = f
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         src.push_str(&format!(
             "    (\"/{rel}\", \"{}\", include_bytes!({:?})),\n",
             mime(f),
