@@ -7,6 +7,31 @@ import { play } from "./sound.js";
 
 const NS = "http://www.w3.org/2000/svg";
 
+// ------------------------------------------------------------- animation
+// Telemetry arrives every 250 ms; indicators glide toward each new value at
+// display frame rate instead of jumping.
+const animators = new Set();
+export function animate(fn) { animators.add(fn); }
+let lastFrame = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - lastFrame) / 1000);
+  lastFrame = now;
+  for (const f of animators) f(dt, now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/** Returns a setter; `apply(value)` is called smoothly each frame. */
+export function tween(apply, tc = 0.22) {
+  let cur = null, tgt = null, shown = null;
+  animate(dt => {
+    if (tgt === null) return;
+    cur = cur === null ? tgt : cur + (tgt - cur) * (1 - Math.exp(-dt / tc));
+    if (shown === null || Math.abs(cur - shown) > 1e-4 * (Math.abs(tgt) + 1)) { shown = cur; apply(cur); }
+  });
+  return v => { if (Number.isFinite(v)) tgt = v; };
+}
+
 export function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -120,13 +145,16 @@ export function roundMeter(label, { min = 0, max = 100, unit = "", major = 5, mi
     h("div", { class: "seg" }, dval, h("span", { class: "seg-unit" }, unit)),
     h("div", { class: "dbar" }, bar));
   const el = h("div", { class: "meter" }, h("div", { class: "bezel only-analog" }, svg), h("div", { class: "only-digital" }, digital), plate(label, "small only-digital"));
+  const setNeedle = tween(a => needle.setAttribute("transform", `rotate(${a} ${cx} ${cy})`));
+  const setRef = tween(a => refPtr?.setAttribute("transform", `rotate(${a} ${cx} ${cy})`));
+  const setBar = tween(f => { bar.style.width = `${f * 100}%`; });
   return {
     el,
     update(v, refV) {
       if (v === undefined) return;
-      needle.setAttribute("transform", `rotate(${ang(v)} ${cx} ${cy})`);
-      if (refPtr && refV !== undefined) refPtr.setAttribute("transform", `rotate(${ang(refV)} ${cx} ${cy})`);
-      bar.style.width = `${Math.max(0, Math.min(1, norm(v))) * 100}%`;
+      setNeedle(ang(v));
+      if (refPtr && refV !== undefined) setRef(ang(refV));
+      setBar(Math.max(0, Math.min(1, norm(v))));
       dval.textContent = log ? sci(v) : fmt(v, digits);
     },
   };
@@ -150,6 +178,7 @@ export function edgewise(label, { min = 0, max = 100, unit = "", major = 5, band
   const ptr = h("div", { class: "ew-ptr" });
   scale.append(ptr);
   const dval = h("span", { class: "seg-val" }, "0");
+  const setPtr = tween(x => { ptr.style.left = `${x}%`; });
   const el = h("div", { class: "edgewise" },
     h("div", { class: "ew-window only-analog" }, scale),
     h("div", { class: "seg only-digital" }, dval, h("span", { class: "seg-unit" }, unit)),
@@ -158,7 +187,7 @@ export function edgewise(label, { min = 0, max = 100, unit = "", major = 5, band
     el,
     update(v) {
       if (v === undefined) return;
-      ptr.style.left = `${Math.max(-1, Math.min(101, norm(v) * 100))}%`;
+      setPtr(Math.max(-1, Math.min(101, norm(v) * 100)));
       dval.textContent = log ? sci(v) : fmt(v, digits);
     },
   };
@@ -170,10 +199,11 @@ export function vbar(label, { max = 100, digits = 0 } = {}) {
   const tgt = h("div", { class: "vb-tgt" });
   const num = h("div", { class: "vb-num" }, "0");
   const el = h("div", { class: "vbar" }, h("div", { class: "vb-col" }, fill, tgt), num, h("div", { class: "vb-label" }, label));
+  const setFill = tween(x => { fill.style.height = `${x}%`; }, 0.15);
   return {
     el,
     update(v, target) {
-      fill.style.height = `${Math.max(0, Math.min(1, v / max)) * 100}%`;
+      setFill(Math.max(0, Math.min(1, v / max)) * 100);
       if (target !== undefined) tgt.style.bottom = `${Math.max(0, Math.min(1, target / max)) * 100}%`;
       num.textContent = fmt(v, digits);
     },
@@ -314,6 +344,8 @@ export function synchroscope() {
   ring.append(h("div", { class: "ring-txt slow" }, "TOO SLOW"), h("div", { class: "ring-txt fast" }, "TOO FAST"), h("div", { class: "ring-txt sync" }, "SYNC"));
 
   const l1 = lamp("white"), l2 = lamp("white");
+  let scopeTarget = 0;
+  const setScope = tween(a => needle.setAttribute("transform", `rotate(${a} ${c} ${c})`), 0.12);
   const el = h("div", { class: "synchroscope" },
     h("div", { class: "only-analog sync-wrap" }, svg),
     h("div", { class: "only-digital" }, ring),
@@ -323,7 +355,11 @@ export function synchroscope() {
     /** phase in degrees (-180..180), live = incoming generator energised. */
     update(phase, live) {
       const p = live ? phase : 0;
-      needle.setAttribute("transform", `rotate(${p} ${c} ${c})`);
+      // Unwrap so the pointer keeps turning smoothly through ±180°.
+      let d = p - (scopeTarget % 360);
+      d = ((d + 540) % 360) - 180;
+      scopeTarget += d;
+      setScope(scopeTarget);
       needle.style.opacity = live ? 1 : 0.25;
       const idx = ((Math.round(p / (360 / 32)) % 32) + 32) % 32;
       leds.forEach((d, i) => d.classList.toggle("on", live && i === idx));
@@ -414,6 +450,8 @@ export function maStation(title, cfg, ctx) {
   const outNum = h("span", {}, "0");
   const devPtr = h("div", { class: "ma-dev-ptr" });
   const status = h("div", { class: "ma-status" }, "");
+  const setDev = tween(x => { devPtr.style.left = `${x}%`; });
+  const setOut = tween(x => { outBar.style.width = `${x}%`; });
   const mBtn = h("button", { class: "ma-btn m", onclick: () => { play("button"); ctx.setMode(cfg.module, "manual"); } }, "M");
   const aBtn = h("button", { class: "ma-btn a", onclick: () => { play("button"); ctx.setMode(cfg.module, "auto"); } }, "A");
   const pick = (v, t) => (typeof v === "function" ? v(t) : v);
@@ -452,11 +490,11 @@ export function maStation(title, cfg, ctx) {
       sp.textContent = spV === undefined ? "----" : fmt(spV, cfg.digits ?? 1);
       if (spV !== undefined && pvV !== undefined) {
         const dev = Math.max(-1, Math.min(1, (pvV - spV) / (cfg.devSpan ?? 1)));
-        devPtr.style.left = `${50 + dev * 48}%`;
+        setDev(50 + dev * 48);
       }
       const o = t.readings[cfg.outTag];
       if (o !== undefined) {
-        outBar.style.width = `${Math.max(0, Math.min(100, (o - (cfg.outMin ?? 0)) / ((cfg.outMax ?? 100) - (cfg.outMin ?? 0)) * 100))}%`;
+        setOut(Math.max(0, Math.min(100, (o - (cfg.outMin ?? 0)) / ((cfg.outMax ?? 100) - (cfg.outMin ?? 0)) * 100)));
         outNum.textContent = o.toFixed(cfg.outDigits ?? 0);
       }
       mBtn.classList.toggle("lit", mode === "manual");

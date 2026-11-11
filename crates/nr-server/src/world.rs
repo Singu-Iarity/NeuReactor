@@ -29,6 +29,8 @@ pub struct World {
     pub plant: Pwr,
     /// Active career, if any (sandbox otherwise).
     pub career: Option<nr_game::Career>,
+    /// Grid dispatch and phones (sandbox and career).
+    pub station: nr_game::Station,
     pub time_scale: f64,
     pub paused: bool,
     pub operator_token: String,
@@ -58,6 +60,7 @@ impl World {
         Self {
             plant: Pwr::from_scenario(scenario).unwrap_or_else(Pwr::hot_standby),
             career: None,
+            station: nr_game::Station::new(),
             time_scale: 1.0,
             paused: false,
             operator_token: random_token(),

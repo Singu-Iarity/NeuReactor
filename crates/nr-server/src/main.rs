@@ -88,9 +88,48 @@ fn sim_loop(world: Arc<Mutex<World>>) {
             debt -= dt;
             steps += 1;
         }
-        let World { plant, career, .. } = &mut *w;
+        let World {
+            plant,
+            career,
+            station,
+            ..
+        } = &mut *w;
+        let elapsed = plant.time - t0;
+        if elapsed > 0.0 {
+            let events = station.tick(plant, elapsed);
+            for e in events {
+                if e.text.contains("WITHOUT grid permission") {
+                    if let Some(c) = career.as_mut() {
+                        c.fine(
+                            250_000.0,
+                            "synchronised to the grid without dispatch permission",
+                        );
+                    }
+                }
+                plant.events.push(e);
+            }
+        }
+        if station.agc && station.demand_mwe > 0.0 {
+            let gross = station.demand_mwe + plant.p.house_load_mwe;
+            let module = nr_api::ModuleId::TurbineGovernor;
+            let cur = plant
+                .automation
+                .setpoint(module, "target_mwe")
+                .unwrap_or(0.0);
+            if (cur - gross).abs() > 0.5 {
+                let _ = plant.command(
+                    &nr_api::Command::SetSetpoint {
+                        module,
+                        key: "target_mwe".into(),
+                        value: gross,
+                    },
+                    &nr_api::Origin::Operator,
+                );
+            }
+        }
+        let mult = station.revenue_multiplier(plant);
         if let Some(c) = career.as_mut() {
-            c.tick(plant.time - t0, plant);
+            c.tick_with(elapsed, plant, mult);
         }
         if steps == 20_000 {
             debt = 0.0;

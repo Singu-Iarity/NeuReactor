@@ -2,8 +2,10 @@ import { h, plate, roundMeter, edgewise, readout, selector, springSwitch, maStat
 
 export const id = "cvcs";
 export const title = "CVCS";
+export const cols = 4;
 export const windows = [
-  ["borating", "BORATION IN PROGRESS"], ["diluting", "DILUTION IN PROGRESS"], ["charging_low", "CHARGING FLOW LOW"], ["", ""],
+  ["borating", "BORATION IN PROGRESS"], ["diluting", "DILUTION IN PROGRESS"], ["auto_makeup", "AUTO MAKEUP ACTIVE"], ["", ""],
+  ["charging_low", "CHARGING FLOW LOW"], ["charging_high", "CHARGING FLOW HIGH"], ["letdown_iso", "LETDOWN ISOLATED"], ["", ""],
 ];
 
 export function build(root, ctx) {

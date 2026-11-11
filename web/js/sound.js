@@ -174,6 +174,27 @@ const EFFECTS = {
     tone(t, { freq: 160, type: "square", peak: 0.08, decay: 0.08 });
     tone(t + 0.12, { freq: 160, type: "square", peak: 0.08, decay: 0.08 });
   },
+  // Desk telephone ring: two bursts of a 440+480 Hz bell warble.
+  phone(t) {
+    for (const start of [0, 0.55]) {
+      for (const f of [440, 480]) {
+        const o = ctx.createOscillator(), g = ctx.createGain(), am = ctx.createOscillator(), ag = ctx.createGain();
+        o.type = "triangle"; o.frequency.value = f;
+        am.type = "square"; am.frequency.value = 22;
+        ag.gain.value = 0.06;
+        am.connect(ag).connect(g.gain);
+        g.gain.value = 0.06;
+        o.connect(g).connect(alarmBus);
+        o.start(t + start); am.start(t + start);
+        o.stop(t + start + 0.4); am.stop(t + start + 0.4);
+      }
+    }
+  },
+  // Handset pick-up click + short line tone.
+  pickup(t) {
+    burst(t, { freq: 1800, q: 2, peak: 0.2, decay: 0.03 });
+    tone(t + 0.05, { freq: 425, type: "sine", peak: 0.06, attack: 0.01, decay: 0.25, bus: alarmBus });
+  },
   // SR count-rate speaker click.
   count(t) { burst(t, { freq: 3000, q: 0.7, peak: 0.3, decay: 0.006 }); },
 };

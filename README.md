@@ -100,32 +100,46 @@ pressure, all rods inserted, the turbine on turning gear. (Use
 instructor station.) The tabs are panels of the control board, and each one
 has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
 
-1. **Reactor tab: shutdown banks.** Set BANK SELECT to SA and hold the ROD
-   MOTION lever on OUT until SA reaches 228 steps. Repeat for SB.
-2. **Approach criticality.** Set BANK SELECT to MAN, which moves the control
-   banks in overlap. Withdraw in steps while you watch the **source range**
-   count rate and startup rate. Turn on SR SPEAKER to hear the counts.
-3. **Block the source range at P-6.** Once the intermediate range is above
-   1E-10 A (P-6 lamp), press **SR BLOCK**. If you don't, the SR high-flux trip
-   at 1E5 cps scrams the reactor.
-4. **Up the intermediate range to P-10.** Keep the startup rate under about
-   1 dpm. When 2 of the 4 power range channels exceed 10 % (P-10), press
-   **IR BLOCK** and **PR LO BLOCK** before 25 %. Otherwise those trips fire.
-5. **Turbine-Generator tab.**
-   - Press TURBINE RESET and close the EXCITER FIELD BKR.
-   - Pick an ACCELERATION and press 1800 to roll the turbine to speed.
-6. **Synchronize.**
-   - Trim the governor so the synchroscope turns slowly in the FAST
-     direction.
-   - Close the GEN BREAKER as the pointer reaches 12 o'clock.
-   - On the analog board an out-of-phase close damages the generator and
-     trips it. Badly damaged, it locks out (86G) until repaired.
-   - With the Auto-Synchronizer in AUTO, or the Turbine Control Computer plus
-     the Generator Sync Interface installed, the sync-check relay blocks bad
-     closes and lights **PHASE Δ OUT OF RANGE**. In AUTO it also
-     synchronizes by itself.
-7. **Load the unit.** Raise the governor's MWe setpoint and put rod control
-   in AUTO when ready.
+1. **Steam & Feed tab: condenser vacuum.** Circulating water pumps run at
+   hot standby, but the condenser is at atmospheric pressure.
+   - Start both vacuum (hogging) pumps and open SJAE steam. The SJAEs need
+     main steam above 1.5 MPa.
+   - Once below about 20 kPa, stop the hogging pumps.
+   - With the Condenser Vacuum module in AUTO this happens by itself.
+   - Steam dumps and turbine latching need vacuum, and the turbine trips
+     above 30 kPa.
+2. **Reactor tab: shutdown banks.** BANK SELECT starts on SA: hold ROD MOTION
+   on OUT until SA reaches 228 steps, then do the same for SB. Control banks
+   are interlocked until both are fully withdrawn (ROD WITHDRAWAL BLOCKED).
+3. **Approach criticality.** Set BANK SELECT to MAN, which moves the control
+   banks in overlap. Withdraw in steps while you watch the source range count
+   rate and startup rate. SR SPEAKER lets you hear the counts.
+4. **Block the source range at P-6.** Once the intermediate range is above
+   1E-10 A, press **SR BLOCK**. If you don't, the SR high-flux trip at 1E5 cps
+   scrams the reactor.
+5. **Up the intermediate range to P-10.** Keep the startup rate under about
+   1 dpm. Above P-10, press **IR BLOCK** and **PR LO BLOCK** before 25 %.
+6. **Deaerator.** At low load it needs pegging steam, otherwise DEAERATION NOT
+   EFFECTIVE stays lit. The Deaerator module does this in AUTO.
+7. **Comms tab.** Call the TURBINE HALL for roll checks. In career this is
+   required before latching the turbine.
+8. **Turbine-Generator tab.**
+   - The turbine needs about 4 % steam flow just to hold speed, so raise
+     reactor power to about 8–12 % first.
+   - Press TURBINE RESET, close the EXCITER FIELD BKR, pick an acceleration
+     (S/M/F = 60/120/180 rpm/min) and press 1800.
+   - Don't linger near the rotor critical speeds (about 1150 and 1650 rpm):
+     vibration builds, the room shakes, and above 200 µm the turbine trips.
+9. **Synchronize.**
+   - At speed, call GRID DISPATCH for permission; in career, syncing without
+     it costs a fine.
+   - Trim speed so the synchroscope turns slowly FAST, then close the GEN
+     BREAKER at 12 o'clock. The Auto-Synchronizer can do this in AUTO.
+10. **Load the unit.** Grid dispatch phones in load requests: the phone rings,
+    a toast appears and DEMAND flashes in the top bar.
+    - Accept on the Grid tab (or turn on AGC) and the governor ramps to the
+      new target.
+    - In career, revenue is better when net output stays on demand.
 
 ## What's simulated today (PWR)
 
@@ -135,6 +149,9 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
 - Fuel heat capacity, 4-node primary loop, RCP coastdown and natural circulation
 - Pressurizer: insurge compression, heaters, sprays, PORV and safety valves
 - Steam generators, turbine/generator, steam dumps, relief valves, feedwater heating
+- Condenser (CW pumps, hogging vacuum pumps, SJAEs, hotwell), deaerator, MSIVs
+- Turbine vibration with rotor critical speeds (and optional screen shake)
+- Grid dispatch station and plant telephones (turbine hall, grid, maintenance, chemistry)
 - Westinghouse-style nuclear instrumentation: source, intermediate and power range, with P-6/P-10 blocks
 - Turbine-generator: shaft dynamics, grid frequency drift, synchroscope phase, excitation, sync-check, damage and lockout
 - Reactor protection system (NIS, pressure, level, flow, ΔT, SG level, turbine trip)

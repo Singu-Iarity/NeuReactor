@@ -9,6 +9,9 @@
 //! phase** runs a calendar: power sold earns money, O&M costs money, new
 //! technology appears as the years pass, and research can unlock it early.
 
+pub mod station;
+pub use station::{Call, Station};
+
 use nr_api::equipment::{
     self, Component, Controller, ConversionKit, Equipment, Era, Slot, Tier, Unlock,
 };
@@ -198,6 +201,13 @@ impl Career {
             day -= len;
         }
         format!("31 Dec {}", self.year())
+    }
+
+    /// Charge a fine (e.g. synchronising without grid permission).
+    pub fn fine(&mut self, amount: f64, why: &str) {
+        self.money -= amount;
+        self.costs_total += amount;
+        self.notify(format!("Fine ${:.2}M: {why}", amount / 1e6));
     }
 
     fn notify(&mut self, text: String) {
@@ -544,6 +554,11 @@ impl Career {
 
     /// Advance the career by `dt` seconds of plant time.
     pub fn tick(&mut self, dt: f64, plant: &Pwr) {
+        self.tick_with(dt, plant, 1.0)
+    }
+
+    /// Advance with a grid performance revenue multiplier.
+    pub fn tick_with(&mut self, dt: f64, plant: &Pwr, revenue_mult: f64) {
         if self.phase != Phase::Operating || dt <= 0.0 {
             return;
         }
@@ -552,7 +567,7 @@ impl Career {
         self.elapsed_days += days;
         let net_mw = plant.gross_mwe - plant.p.house_load_mwe;
         if plant.tg.breaker && net_mw > 0.0 {
-            let revenue = net_mw * dt / 3600.0 * self.price_mwh;
+            let revenue = net_mw * dt / 3600.0 * self.price_mwh * revenue_mult;
             self.money += revenue;
             self.revenue_total += revenue;
         }

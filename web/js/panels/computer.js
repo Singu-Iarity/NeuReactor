@@ -1,6 +1,7 @@
 import { h, plate, recorder, pushbutton } from "../widgets.js";
 import { api } from "../api.js";
 import * as sound from "../sound.js";
+import { settings } from "../settings.js";
 
 export const id = "computer";
 export const title = "Plant Computer";
@@ -36,6 +37,8 @@ export function build(root, ctx) {
   const digital = pushbutton("FULLY MODERNISED", { onPress: () => ctx.send({ type: "set_control_room", generation: "digital" }) });
   const training = pushbutton("TRAINING MODE", { color: "amber", onPress: () => ctx.send({ type: "set_training_mode", enabled: !ctx.t().training_mode }) });
   const repair = pushbutton("REPAIR GENERATOR", { onPress: () => ctx.send({ type: "repair_generator" }) });
+  const lampBtn = pushbutton("LAMPS: GREEN = ON", { onPress: () => settings.set("lamps", settings.get("lamps") === "green_on" ? "us" : "green_on") });
+  const shakeBtn = pushbutton("SCREEN SHAKE", { onPress: () => settings.set("shake", !settings.get("shake")) });
   const sndBtns = ["ambience", "alarms", "effects"].map(k => pushbutton(`${k.toUpperCase()} SOUND`, {
     onPress: () => { sound.unlock(); sound.settings.setPref(k, !sound.settings.prefs[k]); },
   }));
@@ -45,6 +48,8 @@ export function build(root, ctx) {
     h("section", { class: "sect", "data-section": "computer.log" }, plate("EVENT LOG"), events),
     h("section", { class: "sect", "data-section": "computer.instructor" }, plate("SANDBOX / INSTRUCTOR STATION"),
       h("div", { class: "row tight" }, hs.el, fp.el, analog.el, digital.el, training.el, repair.el),
+      plate("DISPLAY", "small"), h("div", { class: "row tight" }, lampBtn.el, shakeBtn.el),
+      h("p", { class: "note" }, "Lamp convention: US plants use red = running/closed and green = stopped/open. Light the button to use green = running instead."),
       plate("SOUND", "small"), h("div", { class: "row tight" }, ...sndBtns.map(b => b.el)),
       plate("PLUGINS", "small"), plugins)));
 
@@ -87,6 +92,8 @@ export function build(root, ctx) {
     hs.update(t.scenario === "hot_standby"); fp.update(t.scenario === "full_power");
     analog.update(t.upgrades.every(u => !u.installed)); digital.update(t.upgrades.every(u => u.installed));
     training.update(t.training_mode);
+    lampBtn.update(settings.get("lamps") === "green_on");
+    shakeBtn.update(settings.get("shake"));
     ["ambience", "alarms", "effects"].forEach((k, i) => sndBtns[i].update(sound.settings.prefs[k]));
     repair.update(false, t.readings.generator_health_pct >= 100);
     if (t.game_mode === "career") [hs, fp, analog, digital, training, repair].forEach(b => b.update(false, true));

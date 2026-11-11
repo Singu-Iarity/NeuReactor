@@ -209,7 +209,8 @@ fn api_authed(
                 drop(w);
                 return error(req, 403, "requires telemetry_read");
             }
-            let t = w.plant.telemetry(w.time_scale, w.paused);
+            let mut t = w.plant.telemetry(w.time_scale, w.paused);
+            t.alarms.extend(w.station.alarms(&w.plant));
             drop(w);
             json_resp(req, 200, serde_json::to_value(t).unwrap())
         }
@@ -273,6 +274,32 @@ fn api_authed(
                 Err(e) => error(req, 400, &e),
             }
         }
+        (Method::Get, "/api/v1/station") if is_operator => {
+            let st = &w.station;
+            let v = json!({
+                "demand_mwe": st.demand_mwe,
+                "pending": st.pending,
+                "deadline": st.deadline,
+                "agc": st.agc,
+                "on_target_s": st.on_target_s,
+                "off_target_s": st.off_target_s,
+                "boron_sample": st.boron_sample,
+                "messages": st.messages.iter().rev().take(80).collect::<Vec<_>>(),
+                "sim_time": w.plant.time,
+            });
+            drop(w);
+            json_resp(req, 200, v)
+        }
+        (Method::Post, p) if is_operator && p.starts_with("/api/v1/station/") => {
+            let action = &p["/api/v1/station/".len()..];
+            let result = station_action(&mut w, action, body);
+            w.collect_events();
+            drop(w);
+            match result {
+                Ok(()) => json_resp(req, 200, json!({ "ok": true })),
+                Err(e) => error(req, 400, &e),
+            }
+        }
         (Method::Get, "/api/v1/plugins") if is_operator => {
             let list: Vec<_> = w.plugins.values().cloned().collect();
             drop(w);
@@ -329,6 +356,7 @@ fn career_action(w: &mut World, action: &str, body: &str) -> Result<(), String> 
             w.career = Some(nr_game::Career::new(n.start_year, n.difficulty));
             // The site is under construction: hold the simulation.
             w.plant = nr_reactors::Pwr::hot_standby();
+            w.station = nr_game::Station::new();
             w.plant.automation.game_mode = nr_api::GameMode::Career;
             w.paused = true;
             Ok(())
@@ -336,6 +364,7 @@ fn career_action(w: &mut World, action: &str, body: &str) -> Result<(), String> 
         "quit" => {
             w.career = None;
             w.plant = nr_reactors::Pwr::hot_standby();
+            w.station = nr_game::Station::new();
             w.paused = false;
             Ok(())
         }
@@ -354,10 +383,53 @@ fn career_action(w: &mut World, action: &str, body: &str) -> Result<(), String> 
         "commission" => {
             let plant = w.career.as_mut().ok_or("no career active")?.commission()?;
             w.plant = plant;
+            w.station = nr_game::Station::new();
             w.paused = false;
             w.time_scale = 1.0;
             Ok(())
         }
         _ => Err("unknown career action".into()),
+    }
+}
+
+#[derive(Deserialize)]
+struct CallReq {
+    call: nr_game::Call,
+}
+
+#[derive(Deserialize)]
+struct AgcReq {
+    on: bool,
+}
+
+fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String> {
+    let parse = |e: serde_json::Error| format!("bad request: {e}");
+    let t = w.plant.time;
+    match action {
+        "call" => {
+            let c: CallReq = serde_json::from_str(body).map_err(parse)?;
+            w.station.call(c.call, t);
+            Ok(())
+        }
+        "accept" => {
+            let target = w.station.accept(t).ok_or("no pending load request")?;
+            // Hand the new load to the turbine governor if it is in AUTO.
+            let gross = target + w.plant.p.house_load_mwe;
+            let _ = w.plant.command(
+                &Command::SetSetpoint {
+                    module: modules::ModuleId::TurbineGovernor,
+                    key: "target_mwe".into(),
+                    value: gross,
+                },
+                &Origin::Operator,
+            );
+            Ok(())
+        }
+        "agc" => {
+            let a: AgcReq = serde_json::from_str(body).map_err(parse)?;
+            w.station.agc = a.on;
+            Ok(())
+        }
+        _ => Err("unknown station action".into()),
     }
 }
