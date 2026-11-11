@@ -285,6 +285,7 @@ fn api_authed(
                 "off_target_s": st.off_target_s,
                 "boron_sample": st.boron_sample,
                 "messages": st.messages.iter().rev().take(80).collect::<Vec<_>>(),
+                "unacked": st.unacked(),
                 "sim_time": w.plant.time,
             });
             drop(w);
@@ -416,6 +417,29 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
         "call" => {
             let c: CallReq = serde_json::from_str(body).map_err(parse)?;
             w.station.call(c.call, t);
+            Ok(())
+        }
+        "ack" => {
+            #[derive(Deserialize)]
+            struct AckReq {
+                seq: Option<u64>,
+            }
+            let a: AckReq = serde_json::from_str(body).map_err(parse)?;
+            w.station.ack(a.seq);
+            Ok(())
+        }
+        "message" => {
+            #[derive(Deserialize)]
+            struct MsgReq {
+                text: String,
+            }
+            let m: MsgReq = serde_json::from_str(body).map_err(parse)?;
+            if m.text.len() > 300 {
+                return Err("message too long".into());
+            }
+            if w.station.typed(&m.text, t) == Some(nr_game::station::Intent::AcceptLoad) {
+                return station_action(w, "accept", "{}");
+            }
             Ok(())
         }
         "accept" => {

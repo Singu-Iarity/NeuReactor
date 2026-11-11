@@ -318,6 +318,8 @@ pub fn upgrade_year(u: UpgradeId) -> i32 {
         U::DigitalCondenserControls => 1993,
         U::GridDispatchLink => 1998,
         U::DigitalElectricalControls => 1991,
+        U::MessageTerminal => 1982,
+        U::MessagingHmi => 1997,
         U::TurbineControlComputer => 1982,
         U::SolidStateRodControl => 1984,
         U::GeneratorSyncInterface => 1985,

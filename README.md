@@ -180,6 +180,11 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
   Motor-start inrush can overload and lock out the startup transformer; bus B
   needs the generator or the A-B tie; dead buses stop their loads; loss of DC
   trips the reactor; the anti-motoring relay opens a motoring generator.
+- Plant messaging terminal on the reactor board, by installed equipment:
+  vintage lamp message panel (lit caller windows, press to read/acknowledge),
+  dated green-screen CRT terminal with side pushbuttons and function-key
+  requests, or a modern HMI where you can type free-text requests ("calling
+  for turbine runup"); anything not understood gets "MCR, please repeat"
 - Grid dispatch station and plant telephones (turbine hall, grid, maintenance, chemistry)
 - Westinghouse-style nuclear instrumentation: source, intermediate and power range, with P-6/P-10 blocks
 - Turbine-generator: shaft dynamics, grid frequency drift, synchroscope phase, excitation, sync-check, damage and lockout

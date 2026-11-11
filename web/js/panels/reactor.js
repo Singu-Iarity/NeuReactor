@@ -1,3 +1,4 @@
+import { messagingTerminal } from "../msgterm.js";
 import { h, plate, roundMeter, edgewise, readout, vbar, lamp, pushbutton, selector, springSwitch, maStation } from "../widgets.js";
 import { coreMap } from "../core.js";
 
@@ -88,6 +89,8 @@ export function build(root, ctx) {
     v => ctx.send({ type: "set_setpoint", module: "reactor_power", key: "ramp_pct_min", value: v }));
   const pref = readout("POWER REFERENCE [%]", { digits: 1 });
 
+  const msg = messagingTerminal(ctx);
+
   // ---- first out
   const fo = h("div", { class: "firstout" }, ...FIRST_OUT.map(n => h("div", { class: "fo-win", "data-trip": n }, n.toUpperCase())));
 
@@ -108,10 +111,12 @@ export function build(root, ctx) {
       h("section", { class: "sect", "data-section": "reactor.rods" }, plate("REACTOR POWER CONTROLLER"),
         h("p", { class: "note" }, "Holds reactor power at a setpoint (rod control must be in AUTO). ROD: rods follow the setpoint, startup rate limited. BORON: dilute/borate with rods parked. COORD: rods for fast changes, boron returns the lead bank to its band. Analog cabinets: ROD only."),
         h("div", { class: "row" }, rpcMa.el, h("div", { class: "col" }, rpcMode.el, rpcRamp.el, pref.el))),
-      h("section", { class: "sect", "data-section": "reactor.firstout" }, plate("REACTOR TRIP FIRST OUT"), fo)));
+      h("section", { class: "sect", "data-section": "reactor.firstout" }, plate("REACTOR TRIP FIRST OUT"), fo),
+      msg.el));
 
   return t => {
     const R = t.readings;
+    msg.update(t);
     sr.update(Math.max(R.sr_cps, 1));
     srSur.update(R.sr_sur_dpm);
     ir.update(R.ir_amps);

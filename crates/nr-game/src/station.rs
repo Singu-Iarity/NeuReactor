@@ -33,6 +33,109 @@ pub struct Message {
     pub text: String,
     /// Rings the phone in the UI.
     pub ring: bool,
+    /// Sender's plant location (shown on the messaging terminal).
+    #[serde(default)]
+    pub location: String,
+    /// Acknowledged on the messaging terminal.
+    #[serde(default)]
+    pub acked: bool,
+}
+
+/// Plant location of each message originator.
+pub fn location_of(from: &str) -> &'static str {
+    match from {
+        "Turbine Hall" => "TURB BLDG EL 30",
+        "Grid Dispatch" => "SYSTEM DISPATCH",
+        "Maintenance" => "MAINT SHOP",
+        "Chemistry" => "CHEM LAB",
+        "Plant Operator" => "AUX BLDG",
+        _ => "MAIN CONTROL RM",
+    }
+}
+
+/// What a free-text message from the control room asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    Call(Call),
+    /// Accept the pending grid load request.
+    AcceptLoad,
+}
+
+/// Interpret an operator's typed message ("calling for turbine runup",
+/// "request permission to sync", "need a boron sample" ...).
+pub fn parse_request(text: &str) -> Option<Intent> {
+    let t = text.to_lowercase();
+    let any = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
+    if any(&["boron", "sample", "chemistry", "chem lab", "ppm"]) {
+        return Some(Intent::Call(Call::BoronSample));
+    }
+    if any(&[
+        "sync",
+        "permission",
+        "parallel",
+        "tie in",
+        "tie to",
+        "connect to the grid",
+        "connect to grid",
+        "close the breaker",
+        "close breaker",
+    ]) {
+        return Some(Intent::Call(Call::SyncPermission));
+    }
+    if any(&["trip", "scram", "tripped"]) {
+        return Some(Intent::Call(Call::ReportTrip));
+    }
+    if any(&[
+        "online",
+        "on-line",
+        "on line",
+        "on the grid",
+        "synchronized",
+        "synchronised",
+    ]) {
+        return Some(Intent::Call(Call::ReportOnline));
+    }
+    if any(&[
+        "roll",
+        "run up",
+        "runup",
+        "run-up",
+        "turning gear",
+        "latch",
+        "warm up",
+        "warmup",
+        "gland",
+        "drains",
+    ]) || (t.contains("turbine") && any(&["check", "ready", "start", "prep"]))
+    {
+        return Some(Intent::Call(Call::TurbineRollChecks));
+    }
+    if any(&[
+        "maint",
+        "walkdown",
+        "walk down",
+        "repair",
+        "work order",
+        "inspect",
+        "electrician",
+        "mechanic",
+        "leak",
+    ]) {
+        return Some(Intent::Call(Call::Maintenance));
+    }
+    if any(&[
+        "accept",
+        "acknowledge",
+        "copy the load",
+        "roger",
+        "will comply",
+        "wilco",
+        "load request",
+        "going to",
+    ]) {
+        return Some(Intent::AcceptLoad);
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +147,10 @@ pub enum Call {
     ReportTrip,
     Maintenance,
     BoronSample,
+    /// Internal: message not understood (terminal free text).
+    SayAgain,
+    /// Internal: load acceptance with no request outstanding.
+    NoRequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +225,8 @@ impl Station {
             from: from.into(),
             text,
             ring,
+            location: location_of(from).into(),
+            acked: from == "Control Room",
         });
         if self.messages.len() > 200 {
             self.messages.remove(0);
@@ -166,6 +275,50 @@ impl Station {
         Some(req.target_mwe)
     }
 
+    /// Acknowledge one message (or all with `None`) on the terminal.
+    pub fn ack(&mut self, seq: Option<u64>) {
+        for m in &mut self.messages {
+            if seq.is_none_or(|s| s == m.seq) {
+                m.acked = true;
+            }
+        }
+    }
+
+    /// Unacknowledged incoming messages.
+    pub fn unacked(&self) -> usize {
+        self.messages.iter().filter(|m| !m.acked).count()
+    }
+
+    /// A free-text message typed on the messaging terminal. Returns the
+    /// understood intent (the caller performs `AcceptLoad`).
+    pub fn typed(&mut self, text: &str, t: f64) -> Option<Intent> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        self.say(t, "Control Room", text.to_string(), false);
+        let intent = parse_request(text);
+        match intent {
+            Some(Intent::Call(c)) => self.call(c, t),
+            Some(Intent::AcceptLoad) if self.pending.is_none() => {
+                self.replies.push(PendingReply {
+                    at: t + 15.0,
+                    call: Call::NoRequest,
+                });
+                return None;
+            }
+            Some(Intent::AcceptLoad) => {}
+            None => {
+                let at = t + 10.0 + 10.0 * self.rand();
+                self.replies.push(PendingReply {
+                    at,
+                    call: Call::SayAgain,
+                });
+            }
+        }
+        intent
+    }
+
     /// Place a phone call; the reply comes after a delay.
     pub fn call(&mut self, call: Call, t: f64) {
         let (to, text, delay) = match call {
@@ -183,6 +336,7 @@ impl Station {
             Call::ReportTrip => ("Grid Dispatch", "Reporting a unit trip.", 20.0),
             Call::Maintenance => ("Maintenance", "Requesting a maintenance walkdown.", 300.0),
             Call::BoronSample => ("Chemistry", "Requesting an RCS boron sample.", 600.0),
+            Call::SayAgain | Call::NoRequest => return,
         };
         self.say(t, "Control Room", format!("To {to}: {text}"), false);
         self.replies.push(PendingReply {
@@ -245,6 +399,18 @@ impl Station {
                 t,
                 "Maintenance",
                 "Walkdown complete: no deficiencies found.".into(),
+                true,
+            ),
+            Call::SayAgain => self.say(
+                t,
+                "Plant Operator",
+                "MCR, please repeat your last message, not understood.".into(),
+                true,
+            ),
+            Call::NoRequest => self.say(
+                t,
+                "Grid Dispatch",
+                "MCR, we have no load instruction outstanding.".into(),
                 true,
             ),
             Call::BoronSample => {
@@ -480,5 +646,53 @@ mod tests {
             .messages
             .iter()
             .any(|m| m.text.contains("synchronous speed")));
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    #[test]
+    fn understands_typical_requests() {
+        let c = |s: &str| parse_request(s);
+        assert_eq!(
+            c("calling for turbine runup"),
+            Some(Intent::Call(Call::TurbineRollChecks))
+        );
+        assert_eq!(
+            c("Turbine hall, ready the machine for roll"),
+            Some(Intent::Call(Call::TurbineRollChecks))
+        );
+        assert_eq!(
+            c("request permission to sync to the grid"),
+            Some(Intent::Call(Call::SyncPermission))
+        );
+        assert_eq!(
+            c("unit 1 is online"),
+            Some(Intent::Call(Call::ReportOnline))
+        );
+        assert_eq!(
+            c("we just had a reactor trip"),
+            Some(Intent::Call(Call::ReportTrip))
+        );
+        assert_eq!(
+            c("need an RCS boron sample please"),
+            Some(Intent::Call(Call::BoronSample))
+        );
+        assert_eq!(
+            c("send maintenance for a walkdown"),
+            Some(Intent::Call(Call::Maintenance))
+        );
+        assert_eq!(c("roger, accept the new load"), Some(Intent::AcceptLoad));
+        assert_eq!(c("what is the weather like"), None);
+    }
+
+    #[test]
+    fn unclear_message_gets_say_again() {
+        let mut s = Station::new();
+        assert!(s.typed("blah blah", 0.0).is_none());
+        assert_eq!(s.replies.len(), 1);
+        assert_eq!(s.replies[0].call, Call::SayAgain);
     }
 }

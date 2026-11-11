@@ -35,6 +35,8 @@ pub enum UpgradeId {
     DigitalCondenserControls,
     GridDispatchLink,
     DigitalElectricalControls,
+    MessageTerminal,
+    MessagingHmi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +176,8 @@ pub const CATALOG: &[UpgradeInfo] = &[
     DIGITAL_CONDENSER,
     GRID_DISPATCH_LINK,
     DIGITAL_ELECTRICAL,
+    MESSAGE_TERMINAL,
+    MESSAGING_HMI,
 ];
 
 /// Board hardware entries appended to the catalog.
@@ -216,6 +220,26 @@ pub const DIGITAL_ELECTRICAL: UpgradeInfo = UpgradeInfo {
     description: "Modern one-line mimic, breaker controls, diesel and DC panels wired to the plant process computer.",
     price: 1_500_000,
     sections: &["electrical.oneline", "electrical.diesels", "electrical.dc"],
+};
+
+pub const MESSAGE_TERMINAL: UpgradeInfo = UpgradeInfo {
+    id: U::MessageTerminal,
+    kind: UpgradeKind::BoardHardware,
+    computer: None,
+    name: "Plant Messaging Terminal (CRT)",
+    description: "Green-screen message terminal with pushbuttons on the reactor board: scrolling message log with sender locations and function-key requests. Replaces the lamp message panel.",
+    price: 250_000,
+    sections: &[],
+};
+
+pub const MESSAGING_HMI: UpgradeInfo = UpgradeInfo {
+    id: U::MessagingHmi,
+    kind: UpgradeKind::PanelPackage,
+    computer: Some(U::PlantProcessComputer),
+    name: "Plant Messaging HMI",
+    description: "Networked messaging workstation with keyboard and mouse: type free-text requests to the plant and dispatch.",
+    price: 900_000,
+    sections: &["reactor.messages"],
 };
 
 pub fn info(id: UpgradeId) -> &'static UpgradeInfo {
