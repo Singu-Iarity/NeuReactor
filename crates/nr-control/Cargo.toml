@@ -1,0 +1,10 @@
+[package]
+name = "nr-control"
+description = "NeuReactor I&C: automation controller modules and reactor protection system"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nr-core.workspace = true
+nr-api.workspace = true
+serde.workspace = true

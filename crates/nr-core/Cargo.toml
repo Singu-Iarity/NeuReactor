@@ -1,0 +1,5 @@
+[package]
+name = "nr-core"
+description = "NeuReactor core numerics: math helpers, controllers, water/steam properties, RNG"
+version.workspace = true
+edition.workspace = true

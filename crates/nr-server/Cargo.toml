@@ -1,0 +1,16 @@
+[package]
+name = "nr-server"
+description = "NeuReactor local server: runs the simulation and serves the control room UI and plugin API on localhost"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "neureactor"
+path = "src/main.rs"
+
+[dependencies]
+nr-api.workspace = true
+nr-reactors.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true

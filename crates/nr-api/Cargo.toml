@@ -1,0 +1,11 @@
+[package]
+name = "nr-api"
+description = "NeuReactor public API: commands, telemetry, capability scopes, automation module catalog and access policy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

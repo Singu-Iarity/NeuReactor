@@ -1,0 +1,188 @@
+//! Operator / plugin commands.
+
+use crate::modules::{ModuleId, ModuleMode};
+use serde::{Deserialize, Serialize};
+
+/// A plant actuator group. Each is owned by at most one automation module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Actuator {
+    ControlRods,
+    Boration,
+    PressurizerHeaters,
+    PressurizerSpray,
+    Charging,
+    Letdown,
+    CoolantPumps,
+    Feedwater,
+    Deaerator,
+    Condenser,
+    SteamDump,
+    TurbineValves,
+    GeneratorBreaker,
+    Diesels,
+    AuxFeedwater,
+}
+
+impl Actuator {
+    pub const ALL: &'static [Actuator] = &[
+        Actuator::ControlRods,
+        Actuator::Boration,
+        Actuator::PressurizerHeaters,
+        Actuator::PressurizerSpray,
+        Actuator::Charging,
+        Actuator::Letdown,
+        Actuator::CoolantPumps,
+        Actuator::Feedwater,
+        Actuator::Deaerator,
+        Actuator::Condenser,
+        Actuator::SteamDump,
+        Actuator::TurbineValves,
+        Actuator::GeneratorBreaker,
+        Actuator::Diesels,
+        Actuator::AuxFeedwater,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BorationMode {
+    #[default]
+    Off,
+    Borate,
+    Dilute,
+}
+
+/// Every action that can be taken on a plant. JSON form is
+/// `{"type": "move_rod_bank", "bank": "D", "target": 180}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Command {
+    // --- manual actuator commands ---
+    MoveRodBank {
+        bank: String,
+        target: f64,
+    },
+    SetBoration {
+        mode: BorationMode,
+    },
+    SetPressurizerHeaters {
+        fraction: f64,
+    },
+    SetPressurizerSpray {
+        fraction: f64,
+    },
+    SetCharging {
+        kg_s: f64,
+    },
+    SetLetdown {
+        kg_s: f64,
+    },
+    SetCoolantPump {
+        index: usize,
+        running: bool,
+    },
+    SetFeedwater {
+        fraction: f64,
+    },
+    SetSteamDump {
+        fraction: f64,
+    },
+    SetTurbineValve {
+        fraction: f64,
+    },
+    SetGeneratorBreaker {
+        closed: bool,
+    },
+    // --- safety ---
+    Scram,
+    ResetTrip,
+    // --- automation ---
+    SetModuleMode {
+        module: ModuleId,
+        mode: ModuleMode,
+    },
+    SetSetpoint {
+        module: ModuleId,
+        key: String,
+        value: f64,
+    },
+    // --- simulation control ---
+    SetTimeScale {
+        factor: f64,
+    },
+    SetPaused {
+        paused: bool,
+    },
+    // --- scenario / sandbox only ---
+    InjectSensorFault {
+        tag: String,
+        fault: String,
+    },
+    SetTrainingMode {
+        enabled: bool,
+    },
+}
+
+/// Coarse classification used by the access policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandKind {
+    Manual(Actuator),
+    Scram,
+    ResetTrip,
+    ModuleMode(ModuleId, ModuleMode),
+    Setpoint(ModuleId),
+    Sim,
+    Scenario,
+}
+
+impl Command {
+    pub fn kind(&self) -> CommandKind {
+        use Actuator as A;
+        use Command as C;
+        match self {
+            C::MoveRodBank { .. } => CommandKind::Manual(A::ControlRods),
+            C::SetBoration { .. } => CommandKind::Manual(A::Boration),
+            C::SetPressurizerHeaters { .. } => CommandKind::Manual(A::PressurizerHeaters),
+            C::SetPressurizerSpray { .. } => CommandKind::Manual(A::PressurizerSpray),
+            C::SetCharging { .. } => CommandKind::Manual(A::Charging),
+            C::SetLetdown { .. } => CommandKind::Manual(A::Letdown),
+            C::SetCoolantPump { .. } => CommandKind::Manual(A::CoolantPumps),
+            C::SetFeedwater { .. } => CommandKind::Manual(A::Feedwater),
+            C::SetSteamDump { .. } => CommandKind::Manual(A::SteamDump),
+            C::SetTurbineValve { .. } => CommandKind::Manual(A::TurbineValves),
+            C::SetGeneratorBreaker { .. } => CommandKind::Manual(A::GeneratorBreaker),
+            C::Scram => CommandKind::Scram,
+            C::ResetTrip => CommandKind::ResetTrip,
+            C::SetModuleMode { module, mode } => CommandKind::ModuleMode(*module, *mode),
+            C::SetSetpoint { module, .. } => CommandKind::Setpoint(*module),
+            C::SetTimeScale { .. } | C::SetPaused { .. } => CommandKind::Sim,
+            C::InjectSensorFault { .. } | C::SetTrainingMode { .. } => CommandKind::Scenario,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_round_trip() {
+        let c = Command::MoveRodBank {
+            bank: "D".into(),
+            target: 180.0,
+        };
+        let s = serde_json::to_string(&c).unwrap();
+        assert_eq!(s, r#"{"type":"move_rod_bank","bank":"D","target":180.0}"#);
+        let back: Command = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, c);
+        let m: Command = serde_json::from_str(
+            r#"{"type":"set_module_mode","module":"rod_control","mode":"auto"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            m.kind(),
+            CommandKind::ModuleMode(ModuleId::RodControl, ModuleMode::Auto)
+        );
+    }
+}

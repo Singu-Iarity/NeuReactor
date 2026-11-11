@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+repository = "https://github.com/Singu-Iarity/NeuReactor"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+nr-core = { path = "crates/nr-core" }
+nr-physics = { path = "crates/nr-physics" }
+nr-api = { path = "crates/nr-api" }
+nr-control = { path = "crates/nr-control" }
+nr-reactors = { path = "crates/nr-reactors" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

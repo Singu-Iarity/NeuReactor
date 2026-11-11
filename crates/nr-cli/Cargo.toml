@@ -1,0 +1,13 @@
+[package]
+name = "nr-cli"
+description = "Headless NeuReactor runner: scenarios, CSV traces, benchmarks"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nr-cli"
+path = "src/main.rs"
+
+[dependencies]
+nr-api.workspace = true
+nr-reactors.workspace = true

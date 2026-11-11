@@ -1,0 +1,12 @@
+[package]
+name = "nr-reactors"
+description = "NeuReactor reactor plant models (PWR first) wired from nr-physics components and nr-control modules"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nr-core.workspace = true
+nr-physics.workspace = true
+nr-api.workspace = true
+nr-control.workspace = true
+serde.workspace = true

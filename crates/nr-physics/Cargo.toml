@@ -1,0 +1,9 @@
+[package]
+name = "nr-physics"
+description = "NeuReactor physics components: neutron kinetics, poisons, decay heat, rods, thermal-hydraulics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nr-core.workspace = true
+serde.workspace = true
