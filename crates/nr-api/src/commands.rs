@@ -108,6 +108,10 @@ pub enum Command {
         selection: String,
         direction: RodDirection,
     },
+    /// Manual rod drive speed (steps/min).
+    SetRodSpeed {
+        steps_per_min: f64,
+    },
     SetBoration {
         mode: BorationMode,
     },
@@ -246,7 +250,9 @@ impl Command {
         use Actuator as A;
         use Command as C;
         match self {
-            C::MoveRodBank { .. } | C::RodMotion { .. } => CommandKind::Manual(A::ControlRods),
+            C::MoveRodBank { .. } | C::RodMotion { .. } | C::SetRodSpeed { .. } => {
+                CommandKind::Manual(A::ControlRods)
+            }
             C::SetBoration { .. } => CommandKind::Manual(A::Boration),
             C::SetPressurizerHeaters { .. } => CommandKind::Manual(A::PressurizerHeaters),
             C::SetPressurizerSpray { .. } => CommandKind::Manual(A::PressurizerSpray),

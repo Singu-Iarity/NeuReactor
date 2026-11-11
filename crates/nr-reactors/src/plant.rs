@@ -33,6 +33,7 @@ impl AutomationState {
         let defaults: &[(ModuleId, &str, f64)] = &[
             (ModuleId::RodControl, "tavg_full_c", 308.6),
             (ModuleId::RodControl, "tavg_noload_c", 291.7),
+            (ModuleId::RodControl, "balancer_speed", 2.0),
             (ModuleId::BoronControl, "band_low_steps", 170.0),
             (ModuleId::BoronControl, "band_high_steps", 215.0),
             (ModuleId::PressurizerPressure, "pressure_mpa", 15.51),

@@ -17,6 +17,11 @@ pub struct RodBank {
     pub target: f64,
     /// Is this a shutdown bank (only fully in / fully out in normal operation)?
     pub shutdown_bank: bool,
+    /// Each bank is two rod groups. `position` is group 1 (the bank step
+    /// counter); group 2 sits at `position + group2_offset`. Missed steps make
+    /// the groups drift apart, which tilts the core's radial power.
+    #[serde(default)]
+    pub group2_offset: f64,
 }
 
 impl RodBank {
@@ -28,6 +33,37 @@ impl RodBank {
             worth,
             target: position,
             shutdown_bank,
+            group2_offset: 0.0,
+        }
+    }
+
+    pub fn group2(&self) -> f64 {
+        clamp(self.position + self.group2_offset, 0.0, self.max_steps)
+    }
+
+    fn worth_at(&self, pos: f64) -> f64 {
+        let x = clamp(1.0 - pos / self.max_steps, 0.0, 1.0);
+        -self.worth * (x - (2.0 * PI * x).sin() / (2.0 * PI))
+    }
+
+    /// Reactivity of each group (each carries half the bank worth).
+    pub fn group_reactivity(&self) -> (f64, f64) {
+        (
+            0.5 * self.worth_at(self.position),
+            0.5 * self.worth_at(self.group2()),
+        )
+    }
+
+    /// Move only one group (1 or 2) by `delta` steps.
+    pub fn move_group(&mut self, group: u8, delta: f64) {
+        if group == 2 {
+            let g2 = clamp(self.group2() + delta, 0.0, self.max_steps);
+            self.group2_offset = g2 - self.position;
+        } else {
+            let g2 = self.group2();
+            self.position = clamp(self.position + delta, 0.0, self.max_steps);
+            self.target = self.position;
+            self.group2_offset = g2 - self.position;
         }
     }
 
@@ -39,21 +75,31 @@ impl RodBank {
     /// Negative reactivity currently inserted by this bank. Uses the classic
     /// S-curve integral worth for a bank in a cosine-shaped axial flux.
     pub fn reactivity(&self) -> f64 {
-        let x = clamp(self.insertion(), 0.0, 1.0);
-        -self.worth * (x - (2.0 * PI * x).sin() / (2.0 * PI))
+        let (a, b) = self.group_reactivity();
+        a + b
     }
 
     /// Drive the bank toward `target` at `speed` steps/s.
-    pub fn drive(&mut self, speed: f64, dt: f64) {
+    pub fn drive(&mut self, speed: f64, dt: f64) -> f64 {
         let max = speed * dt;
+        let before = self.position;
+        let g2 = self.group2();
         self.position += clamp(self.target - self.position, -max, max);
         self.position = clamp(self.position, 0.0, self.max_steps);
+        let moved = self.position - before;
+        // Group 2 follows, but cannot go past the ends of travel.
+        let g2_new = clamp(g2 + moved, 0.0, self.max_steps);
+        self.group2_offset = g2_new - self.position;
+        moved
     }
 
     /// Gravity drop during scram: full insertion in ~`drop_time` seconds.
     pub fn drop(&mut self, drop_time: f64, dt: f64) {
         self.position = (self.position - self.max_steps * dt / drop_time).max(0.0);
         self.target = 0.0;
+        if self.position <= 0.0 {
+            self.group2_offset = 0.0;
+        }
     }
 }
 
@@ -69,6 +115,21 @@ mod tests {
         assert!((b.reactivity() + 0.005).abs() < 1e-9);
         b.position = 0.0;
         assert!((b.reactivity() + 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn groups_move_independently_and_together() {
+        let mut b = RodBank::new("D", 228.0, 0.01, 200.0, false);
+        b.move_group(2, -10.0);
+        assert_eq!(b.group2(), 190.0);
+        b.target = 100.0;
+        for _ in 0..200 {
+            b.drive(1.2, 1.0);
+        }
+        assert_eq!(b.position, 100.0);
+        assert_eq!(b.group2(), 90.0);
+        let (g1, g2) = b.group_reactivity();
+        assert!(g2 < g1, "deeper group carries more negative reactivity");
     }
 
     #[test]

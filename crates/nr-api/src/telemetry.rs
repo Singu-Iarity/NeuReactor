@@ -31,6 +31,8 @@ pub struct RodView {
     pub position: f64,
     pub target: f64,
     pub max_steps: f64,
+    /// Position of the bank's second rod group.
+    pub group2: f64,
 }
 
 /// Nuclear instrumentation system status.
@@ -88,6 +90,10 @@ pub struct Telemetry {
     pub readings: BTreeMap<String, f64>,
     pub rods: Vec<RodView>,
     pub rod_motion: String,
+    /// Manual rod drive speed [steps/min].
+    pub rod_speed_spm: f64,
+    /// Radial power tilt per quadrant (fraction, Q1..Q4).
+    pub quadrant_tilt: Vec<f64>,
     pub coolant_pumps: Vec<bool>,
     pub generator_breaker: bool,
     pub field_breaker: bool,

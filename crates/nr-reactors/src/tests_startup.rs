@@ -716,3 +716,87 @@ fn deaeration_needs_pegging_steam_at_low_load() {
         .iter()
         .any(|a| a.tag == "deaeration"));
 }
+
+#[test]
+fn rod_group_deviation_tilts_power_and_balancer_fixes_it() {
+    let mut p = Pwr::full_power();
+    // Turn the balancer off and knock group D2 out of step.
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::RodControl,
+            key: "balancer_speed".into(),
+            value: 0.0,
+        },
+    );
+    p.banks[5].move_group(2, -40.0);
+    p.advance(20.0);
+    let t = p.telemetry(1.0, false);
+    assert!(t.alarms.iter().any(|a| a.tag == "rod_dev"));
+    assert!(
+        t.alarms.iter().any(|a| a.tag == "qptr"),
+        "tilt {:?}",
+        t.quadrant_tilt
+    );
+    let n41 = t.readings["pr_n41_pct"];
+    let n42 = t.readings["pr_n42_pct"];
+    assert!(n41 > n42 + 1.0, "N41 {n41} N42 {n42}");
+    // Balancer at FAST realigns the groups.
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::RodControl,
+            key: "balancer_speed".into(),
+            value: 3.0,
+        },
+    );
+    p.advance(200.0);
+    assert!(
+        p.banks[5].group2_offset.abs() < 0.5,
+        "{}",
+        p.banks[5].group2_offset
+    );
+    assert!(!p
+        .telemetry(1.0, false)
+        .alarms
+        .iter()
+        .any(|a| a.tag == "rod_dev"));
+}
+
+#[test]
+fn group_select_needs_the_pushbutton_grid_and_speed_selector_works() {
+    let mut p = Pwr::hot_standby();
+    op(
+        &mut p,
+        Command::SetRodSpeed {
+            steps_per_min: 72.0,
+        },
+    );
+    lever(&mut p, "SA", RodDirection::Out);
+    p.advance(60.0);
+    assert!(
+        (p.banks[0].position - 72.0).abs() < 2.0,
+        "SA {}",
+        p.banks[0].position
+    );
+    lever(&mut p, "SA", RodDirection::Hold);
+    lever(&mut p, "SA2", RodDirection::Out);
+    p.advance(10.0);
+    lever(&mut p, "SA2", RodDirection::Hold);
+    assert!(p.banks[0].group2() > p.banks[0].position + 5.0);
+    op(
+        &mut p,
+        Command::SetUpgradeInstalled {
+            upgrade: UpgradeId::RodGroupSelect,
+            installed: false,
+        },
+    );
+    let r = p.command(
+        &Command::RodMotion {
+            selection: "SA2".into(),
+            direction: RodDirection::Out,
+        },
+        &Origin::Operator,
+    );
+    assert!(r.is_err());
+}

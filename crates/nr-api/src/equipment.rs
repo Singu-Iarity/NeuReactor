@@ -266,6 +266,7 @@ pub fn upgrade_year(u: UpgradeId) -> i32 {
     use UpgradeId as U;
     match u {
         U::PlantProcessComputer => 1980,
+        U::RodGroupSelect => 1966,
         U::TurbineControlComputer => 1982,
         U::SolidStateRodControl => 1984,
         U::GeneratorSyncInterface => 1985,

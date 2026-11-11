@@ -31,6 +31,7 @@ pub enum UpgradeId {
     GeneratorSyncInterface,
     DigitalExciter,
     PlantProcessComputer,
+    RodGroupSelect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,8 @@ pub enum UpgradeId {
 pub enum UpgradeKind {
     Computer,
     PanelPackage,
+    /// Extra control board hardware (no computer, no change of look).
+    BoardHardware,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,7 +167,19 @@ pub const CATALOG: &[UpgradeInfo] = &[
         price: 5_000_000,
         sections: &["computer.recorders", "computer.log", "computer.instructor"],
     },
+    ROD_GROUP_SELECT,
 ];
+
+/// Board hardware entries appended to the catalog.
+pub const ROD_GROUP_SELECT: UpgradeInfo = UpgradeInfo {
+    id: U::RodGroupSelect,
+    kind: UpgradeKind::BoardHardware,
+    computer: None,
+    name: "Rod Group Select Pushbutton Grid",
+    description: "Lit pushbutton matrix on the rod control panel: select a single rod group (e.g. D2) for the IN/HOLD/OUT lever to realign groups by hand.",
+    price: 600_000,
+    sections: &[],
+};
 
 pub fn info(id: UpgradeId) -> &'static UpgradeInfo {
     CATALOG
@@ -203,7 +218,7 @@ mod tests {
                 UpgradeKind::PanelPackage => {
                     assert_eq!(info(u.computer.unwrap()).kind, UpgradeKind::Computer)
                 }
-                UpgradeKind::Computer => assert!(u.computer.is_none()),
+                UpgradeKind::Computer | UpgradeKind::BoardHardware => assert!(u.computer.is_none()),
             }
         }
     }

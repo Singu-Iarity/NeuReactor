@@ -213,6 +213,16 @@ fn bias_scale(m: ModuleId) -> f64 {
     }
 }
 
+/// "D2" -> ("D", 2): a single rod group selection.
+fn parse_group(sel: &str) -> Option<(&str, u8)> {
+    let (bank, g) = sel.split_at(sel.len().checked_sub(1)?);
+    match g {
+        "1" if !bank.is_empty() => Some((bank, 1)),
+        "2" if !bank.is_empty() => Some((bank, 2)),
+        _ => None,
+    }
+}
+
 /// Nuclear instrumentation trip blocks.
 #[derive(Debug, Clone, Default)]
 pub struct NisState {
@@ -240,6 +250,10 @@ pub struct Pwr {
     pub boration: BorationMode,
     pub rod_selection: String,
     pub rod_direction: RodDirection,
+    /// Manual rod drive speed [steps/min] (rod speed selector).
+    pub rod_spm: f64,
+    /// Rod balancer currently realigning each bank.
+    balancing: [bool; 6],
     pub nis: NisState,
 
     // Primary
@@ -366,6 +380,8 @@ impl Pwr {
             boration: BorationMode::Off,
             rod_selection: "manual".into(),
             rod_direction: RodDirection::Hold,
+            rod_spm: 48.0,
+            balancing: [false; 6],
             nis: NisState {
                 sr_blocked: true,
                 ir_blocked: true,
@@ -740,25 +756,41 @@ impl Pwr {
                 -1.0
             };
             let speed =
-                sign * self.p.rod_speed_manual * self.automation.equipment.perf(Slot::RodDrives);
-            if self.rod_selection.eq_ignore_ascii_case("manual") {
+                sign * self.rod_spm / 60.0 * self.automation.equipment.perf(Slot::RodDrives);
+            let sel = self.rod_selection.clone();
+            if sel.eq_ignore_ascii_case("manual") {
                 let pos: Vec<f64> = self.banks[2..].iter().map(|b| b.position).collect();
                 let d = overlap_sequence(&pos, self.p.rod_max_steps, self.p.rod_overlap, speed, dt);
                 for (b, d) in self.banks[2..].iter_mut().zip(d) {
                     b.target = clamp(b.position + d, 0.0, b.max_steps);
                 }
+            } else if let Some((bank, group)) = parse_group(&sel) {
+                if let Some(b) = self
+                    .banks
+                    .iter_mut()
+                    .find(|b| b.name.eq_ignore_ascii_case(bank))
+                {
+                    b.move_group(group, speed * dt);
+                }
             } else if let Some(b) = self
                 .banks
                 .iter_mut()
-                .find(|b| b.name.eq_ignore_ascii_case(&self.rod_selection))
+                .find(|b| b.name.eq_ignore_ascii_case(&sel))
             {
                 b.target = clamp(b.position + speed * dt, 0.0, b.max_steps);
             }
         }
-        let speed = self.p.rod_speed_max * self.automation.equipment.perf(Slot::RodDrives);
-        for b in &mut self.banks {
-            b.drive(speed, dt);
+        let speed = self.p.rod_speed_max.max(self.rod_spm / 60.0)
+            * self.automation.equipment.perf(Slot::RodDrives);
+        for i in 0..self.banks.len() {
+            let moved = self.banks[i].drive(speed, dt);
+            // Occasional missed step on one group: groups drift apart.
+            if moved.abs() > 0.0 && self.rng.uniform() < moved.abs() * 0.004 {
+                let slip = if self.rng.uniform() < 0.5 { 1.0 } else { -1.0 };
+                self.banks[i].move_group(2, slip);
+            }
         }
+        self.run_balancer(dt);
     }
 
     fn step_neutronics(&mut self, dt: f64) {
@@ -964,8 +996,12 @@ impl Pwr {
         m.insert("sr_sur_dpm", if self.nis.sr_blocked { 0.0 } else { sur });
         m.insert("ir_amps", self.p.ir_amps_per_n * n + self.p.ir_floor_amps);
         m.insert("ir_sur_dpm", sur);
-        for tag in ["pr_n41_pct", "pr_n42_pct", "pr_n43_pct", "pr_n44_pct"] {
-            m.insert(tag, n * 100.0);
+        let tilt = self.quadrant_tilt();
+        for (i, tag) in ["pr_n41_pct", "pr_n42_pct", "pr_n43_pct", "pr_n44_pct"]
+            .iter()
+            .enumerate()
+        {
+            m.insert(tag, n * 100.0 * (1.0 + tilt[i]));
         }
         m.insert("nuclear_power_pct", n * 100.0);
         m.insert(
@@ -1374,6 +1410,73 @@ impl Pwr {
         self.trip_turbine();
     }
 
+    fn module_usable(&self, m: ModuleId) -> bool {
+        if !self.automation.owned.contains(&m) {
+            return false;
+        }
+        match self.automation.equipment.controllers.get(&m) {
+            Some(Controller::Analog { .. }) => true,
+            _ => modules::info(m)
+                .requires_upgrades
+                .iter()
+                .all(|u| self.automation.upgrades.contains(u)),
+        }
+    }
+
+    /// Automatic rod balancer (part of the rod control module): realigns
+    /// rod groups that have slipped apart. Speed selector OFF/S/M/F.
+    fn run_balancer(&mut self, dt: f64) {
+        let sel = self
+            .automation
+            .setpoint(ModuleId::RodControl, "balancer_speed")
+            .unwrap_or(0.0)
+            .round()
+            .clamp(0.0, 3.0) as usize;
+        if sel == 0 || self.reactor_tripped || !self.module_usable(ModuleId::RodControl) {
+            self.balancing = [false; 6];
+            return;
+        }
+        let digital = matches!(
+            self.automation
+                .equipment
+                .controllers
+                .get(&ModuleId::RodControl),
+            Some(Controller::Digital) | None
+        );
+        let sel = if digital { sel } else { sel.min(2) };
+        let rate =
+            [0.0, 4.0, 8.0, 16.0][sel] / 60.0 * self.automation.equipment.perf(Slot::RodDrives);
+        let deadband = if digital { 1.0 } else { 3.0 };
+        for (i, b) in self.banks.iter_mut().enumerate() {
+            let off = b.group2_offset;
+            if off.abs() > deadband {
+                self.balancing[i] = true;
+            }
+            if self.balancing[i] {
+                if off.abs() < 0.25 {
+                    self.balancing[i] = false;
+                } else {
+                    b.move_group(2, -off.signum() * (rate * dt).min(off.abs()));
+                }
+            }
+        }
+    }
+
+    /// Radial power tilt per quadrant from rod group misalignment. Group 1
+    /// rods sit in quadrants 1 and 3, group 2 in quadrants 2 and 4.
+    pub fn quadrant_tilt(&self) -> [f64; 4] {
+        let d: f64 = self
+            .banks
+            .iter()
+            .map(|b| {
+                let (g1, g2) = b.group_reactivity();
+                g1 - g2
+            })
+            .sum();
+        let k = (50.0 * d).clamp(-0.2, 0.2);
+        [k, -k, k, -k]
+    }
+
     fn shutdown_banks_out(&self) -> bool {
         self.banks
             .iter()
@@ -1441,13 +1544,25 @@ impl Pwr {
                 selection,
                 direction,
             } => {
+                let group = parse_group(selection);
+                let bank_name = group.map(|g| g.0).unwrap_or(selection.as_str());
                 let valid = selection.eq_ignore_ascii_case("manual")
                     || self
                         .banks
                         .iter()
-                        .any(|b| b.name.eq_ignore_ascii_case(selection));
+                        .any(|b| b.name.eq_ignore_ascii_case(bank_name));
                 if !valid {
-                    return deny("bank selector must be MANUAL or a bank name");
+                    return deny("bank selector must be MANUAL, a bank (D) or a group (D2)");
+                }
+                if group.is_some()
+                    && !self
+                        .automation
+                        .upgrades
+                        .contains(&UpgradeId::RodGroupSelect)
+                {
+                    return deny(
+                        "single-group selection needs the Rod Group Select pushbutton grid",
+                    );
                 }
                 if self.reactor_tripped && *direction == RodDirection::Out {
                     return deny("reactor trip is latched; reset before withdrawing rods");
@@ -1456,7 +1571,7 @@ impl Pwr {
                     || self
                         .banks
                         .iter()
-                        .any(|b| !b.shutdown_bank && b.name.eq_ignore_ascii_case(selection));
+                        .any(|b| !b.shutdown_bank && b.name.eq_ignore_ascii_case(bank_name));
                 if control && *direction == RodDirection::Out && !self.shutdown_banks_out() {
                     self.rod_block_until = self.time + 5.0;
                     return deny("ROD WITHDRAWAL BLOCKED: withdraw shutdown banks SA and SB fully (228 steps) first");
@@ -1468,6 +1583,9 @@ impl Pwr {
                         b.target = b.position;
                     }
                 }
+            }
+            Command::SetRodSpeed { steps_per_min } => {
+                self.rod_spm = clamp(*steps_per_min, 4.0, 72.0)
             }
             Command::SetBoration { mode } => self.boration = *mode,
             Command::SetCwPump { index, running } => {
@@ -1990,6 +2108,15 @@ impl Pwr {
                 add(rx, "rod_ins_lo", "ROD INSERTION LIMIT LO", W);
             }
         }
+        if self.banks.iter().any(|b| b.group2_offset.abs() > 12.0) {
+            add(rx, "rod_dev", "ROD GROUP DEVIATION", A);
+        }
+        if self.balancing.iter().any(|b| *b) {
+            add(rx, "balancer", "ROD BALANCER ACTIVE", I);
+        }
+        if power > 10.0 && self.quadrant_tilt().iter().any(|t| t.abs() > 0.02) {
+            add(rx, "qptr", "QUADRANT POWER TILT", W);
+        }
         if !tripped && self.rho.total > -0.0005 && self.kinetics.n > 1e-8 {
             add(rx, "critical", "REACTOR CRITICAL", I);
         }
@@ -2270,9 +2397,12 @@ impl Pwr {
                     position: b.position,
                     target: b.target,
                     max_steps: b.max_steps,
+                    group2: b.group2(),
                 })
                 .collect(),
             rod_motion: format!("{}:{:?}", self.rod_selection, self.rod_direction).to_lowercase(),
+            rod_speed_spm: self.rod_spm,
+            quadrant_tilt: self.quadrant_tilt().to_vec(),
             coolant_pumps: self.rcp_running.to_vec(),
             generator_breaker: self.tg.breaker,
             field_breaker: self.tg.field_breaker,
