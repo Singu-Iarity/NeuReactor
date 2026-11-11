@@ -940,3 +940,42 @@ fn agc_needs_unit_load_controller_and_dispatch_link() {
     );
     assert!(!p.agc_available());
 }
+
+#[test]
+fn several_groups_move_together() {
+    let mut p = Pwr::hot_standby();
+    // The auto balancer would realign split groups; turn it off.
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::RodControl,
+            key: "balancer_speed".into(),
+            value: 0.0,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetRodSpeed {
+            steps_per_min: 72.0,
+        },
+    );
+    lever(&mut p, "SA1,SA2,SB1", RodDirection::Out);
+    p.advance(30.0);
+    lever(&mut p, "SA1,SA2,SB1", RodDirection::Hold);
+    assert!((p.banks[0].position - 36.0).abs() < 2.0 && (p.banks[0].group2() - 36.0).abs() < 2.0);
+    assert!(
+        (p.banks[1].position - 36.0).abs() < 2.0,
+        "SB1 {}",
+        p.banks[1].position
+    );
+    assert!(p.banks[1].group2() < 1.0, "SB2 stays in");
+    // Control groups still interlocked behind the shutdown banks.
+    let r = p.command(
+        &Command::RodMotion {
+            selection: "SA1,D1".into(),
+            direction: RodDirection::Out,
+        },
+        &Origin::Operator,
+    );
+    assert!(r.is_err());
+}

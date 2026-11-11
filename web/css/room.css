@@ -519,3 +519,4 @@ body.bf .powerbar .demand.pending { background: #000; }
 [data-gen="analog"] .ma-btn.m.lit { background: #f2b33a; color: #111; box-shadow: 0 0 10px #f2b33a; }
 [data-gen="analog"] .ma-btn.a.lit { background: #f5f0d8; color: #111; box-shadow: 0 0 10px #f5f0d8; }
 [data-gen="analog"] .ma-status { color: #e8b23a; }
+.sel-label { font: 700 9px var(--mono); color: var(--ink); max-width: 220px; word-break: break-all; }

@@ -44,7 +44,14 @@ export function build(root, ctx) {
   const bars = ["SA", "SB", "A", "B", "C", "D"].map(b => vbar(b, { max: 228 }));
   // Hot standby starts with shutdown bank A selected.
   let selection = "SA";
-  const choose = v => { selection = v; sel.update(v.replace(/[12]$/, "")); };
+  const choose = v => { selection = v; sel.update(v.includes(",") ? "" : v.replace(/[12]$/, "")); };
+  // Multi-group selection: tap groups on the grid / core map to add or remove.
+  const picked = () => (selection === "manual" ? [] : selection.split(",").filter(Boolean));
+  const toggle = g => {
+    const set = new Set(picked().flatMap(x => (/[12]$/.test(x) ? [x] : [`${x}1`, `${x}2`])));
+    set.has(g) ? set.delete(g) : set.add(g);
+    choose(set.size ? [...set].join(",") : "SA");
+  };
   const sel = selector("BANK SELECT", [{ label: "MAN", value: "manual" }, "SA", "SB", "A", "B", "C", "D"], v => choose(v));
   sel.update(selection);
   const speed = selector("ROD SPEED", [{ label: "SLOW", value: 8 }, { label: "MED", value: 48 }, { label: "FAST", value: 72 }],
@@ -53,12 +60,16 @@ export function build(root, ctx) {
     v => ctx.send({ type: "set_setpoint", module: "rod_control", key: "balancer_speed", value: v }));
   // Rod group select pushbutton grid (board hardware upgrade).
   const GROUPS = ["SA", "SB", "A", "B", "C", "D"].flatMap(b => [`${b}1`, `${b}2`]);
-  const groupBtns = GROUPS.map(g => pushbutton(g, { small: true, color: "white", onPress: () => choose(g) }));
-  const groupGrid = h("div", { class: "group-grid" }, plate("ROD GROUP SELECT", "small"),
-    h("div", { class: "group-btns" }, ...groupBtns.map(b => b.el)));
+  const groupBtns = GROUPS.map(g => pushbutton(g, { small: true, color: "white", onPress: () => toggle(g) }));
+  const allCtl = pushbutton("ALL CTRL", { small: true, color: "amber", onPress: () => choose("A1,A2,B1,B2,C1,C2,D1,D2") });
+  const clearSel = pushbutton("CLEAR", { small: true, color: "red", onPress: () => choose("SA") });
+  const selLabel = h("div", { class: "sel-label" }, "");
+  const groupGrid = h("div", { class: "group-grid" }, plate("ROD GROUP SELECT (MULTI)", "small"),
+    h("div", { class: "group-btns" }, ...groupBtns.map(b => b.el)),
+    h("div", { class: "row tight" }, allCtl.el, clearSel.el), selLabel);
   const core = coreMap(rod => {
     const hasGrid = ctx.t()?.upgrades.find(u => u.id === "rod_group_select")?.installed;
-    choose(hasGrid ? `${rod.bank}${rod.group}` : rod.bank);
+    if (hasGrid) toggle(`${rod.bank}${rod.group}`); else choose(rod.bank);
   });
   const lever = springSwitch("ROD MOTION", {
     lo: "IN", hi: "OUT",
@@ -129,11 +140,13 @@ export function build(root, ctx) {
     balancer.update(ctx.setpoint("rod_control", "balancer_speed"));
     const hasGrid = t.upgrades.find(u => u.id === "rod_group_select")?.installed;
     groupGrid.style.display = hasGrid ? "" : "none";
-    if (!hasGrid && /[12]$/.test(selection)) choose(selection.slice(0, -1));
-    groupBtns.forEach((b, i) => b.update(selection === GROUPS[i], !manual0()));
+    if (!hasGrid && (selection.includes(",") || /[12]$/.test(selection))) choose(selection.split(",")[0].replace(/[12]$/, ""));
+    const sel2 = new Set(picked().flatMap(x => (/[12]$/.test(x) ? [x] : [`${x}1`, `${x}2`])));
+    groupBtns.forEach((b, i) => b.update(selection === "manual" ? false : sel2.has(GROUPS[i]), !manual0()));
+    selLabel.textContent = `SELECTED: ${selection === "manual" ? "MAN (control banks in overlap)" : selection}`;
     const manual = ctx.moduleMode("rod_control") === "manual";
     lever.update(!manual || t.reactor_tripped);
-    sel.update(selection.replace(/[12]$/, ""), !manual);
+    sel.update(selection.includes(",") ? "" : selection.replace(/[12]$/, ""), !manual);
     rodMa.update(t);
     rxReset.update(t.reactor_tripped);
     fo.querySelectorAll(".fo-win").forEach(w => {

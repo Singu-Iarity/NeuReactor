@@ -769,20 +769,24 @@ impl Pwr {
                 for (b, d) in self.banks[2..].iter_mut().zip(d) {
                     b.target = clamp(b.position + d, 0.0, b.max_steps);
                 }
-            } else if let Some((bank, group)) = parse_group(&sel) {
-                if let Some(b) = self
-                    .banks
-                    .iter_mut()
-                    .find(|b| b.name.eq_ignore_ascii_case(bank))
-                {
-                    b.move_group(group, speed * dt);
+            } else {
+                // One or more banks / groups selected ("D", "D2", "A1,B2,D").
+                for item in sel.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+                    let (bank, group) = match parse_group(item) {
+                        Some((b, g)) => (b, Some(g)),
+                        None => (item, None),
+                    };
+                    if let Some(b) = self
+                        .banks
+                        .iter_mut()
+                        .find(|b| b.name.eq_ignore_ascii_case(bank))
+                    {
+                        match group {
+                            Some(g) => b.move_group(g, speed * dt),
+                            None => b.target = clamp(b.position + speed * dt, 0.0, b.max_steps),
+                        }
+                    }
                 }
-            } else if let Some(b) = self
-                .banks
-                .iter_mut()
-                .find(|b| b.name.eq_ignore_ascii_case(&sel))
-            {
-                b.target = clamp(b.position + speed * dt, 0.0, b.max_steps);
             }
         }
         let speed = self.p.rod_speed_max.max(self.rod_spm / 60.0)
@@ -1632,35 +1636,49 @@ impl Pwr {
                 selection,
                 direction,
             } => {
-                let group = parse_group(selection);
-                let bank_name = group.map(|g| g.0).unwrap_or(selection.as_str());
-                let valid = selection.eq_ignore_ascii_case("manual")
-                    || self
+                let items: Vec<&str> = selection
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                    .collect();
+                let manual = items.len() == 1 && items[0].eq_ignore_ascii_case("manual");
+                let mut any_group = false;
+                let mut any_control = manual;
+                for item in &items {
+                    if manual {
+                        break;
+                    }
+                    let (bank_name, group) = match parse_group(item) {
+                        Some((b, g)) => (b, Some(g)),
+                        None => (*item, None),
+                    };
+                    let Some(bank) = self
                         .banks
                         .iter()
-                        .any(|b| b.name.eq_ignore_ascii_case(bank_name));
-                if !valid {
-                    return deny("bank selector must be MANUAL, a bank (D) or a group (D2)");
+                        .find(|b| b.name.eq_ignore_ascii_case(bank_name))
+                    else {
+                        return deny("rod selection must be MANUAL, banks (D) or groups (D2), e.g. \"A1,B2,D\"");
+                    };
+                    any_group |= group.is_some();
+                    any_control |= !bank.shutdown_bank;
                 }
-                if group.is_some()
+                if items.is_empty() {
+                    return deny("no rods selected");
+                }
+                if (any_group || items.len() > 1)
                     && !self
                         .automation
                         .upgrades
                         .contains(&UpgradeId::RodGroupSelect)
                 {
                     return deny(
-                        "single-group selection needs the Rod Group Select pushbutton grid",
+                        "group and multi-group selection need the Rod Group Select pushbutton grid",
                     );
                 }
                 if self.reactor_tripped && *direction == RodDirection::Out {
                     return deny("reactor trip is latched; reset before withdrawing rods");
                 }
-                let control = selection.eq_ignore_ascii_case("manual")
-                    || self
-                        .banks
-                        .iter()
-                        .any(|b| !b.shutdown_bank && b.name.eq_ignore_ascii_case(bank_name));
-                if control && *direction == RodDirection::Out && !self.shutdown_banks_out() {
+                if any_control && *direction == RodDirection::Out && !self.shutdown_banks_out() {
                     self.rod_block_until = self.time + 5.0;
                     return deny("ROD WITHDRAWAL BLOCKED: withdraw shutdown banks SA and SB fully (228 steps) first");
                 }

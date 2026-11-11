@@ -76,8 +76,9 @@ export function coreMap(onPick) {
         const pos = c.rod.group === 2 ? b.group2 : b.position;
         c.set(pos);
         c.num.textContent = Math.round(pos);
-        const sel = selected === "manual" ? !["SA", "SB"].includes(c.rod.bank)
-          : selected === c.rod.bank || selected === `${c.rod.bank}${c.rod.group}`;
+        const items = selected === "manual" ? null : selected.split(",");
+        const sel = items === null ? !["SA", "SB"].includes(c.rod.bank)
+          : items.includes(c.rod.bank) || items.includes(`${c.rod.bank}${c.rod.group}`);
         c.cell.classList.toggle("selected", sel);
         c.cell.classList.toggle("dev", Math.abs(b.group2 - b.position) > 12);
       }
