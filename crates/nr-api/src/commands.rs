@@ -24,6 +24,7 @@ pub enum Actuator {
     FieldBreaker,
     Exciter,
     NisBlocks,
+    MainSteamIsolation,
     Diesels,
     AuxFeedwater,
 }
@@ -46,6 +47,7 @@ impl Actuator {
         Actuator::FieldBreaker,
         Actuator::Exciter,
         Actuator::NisBlocks,
+        Actuator::MainSteamIsolation,
         Actuator::Diesels,
         Actuator::AuxFeedwater,
     ];
@@ -142,6 +144,23 @@ pub enum Command {
     },
     SetExcitation {
         fraction: f64,
+    },
+    SetCwPump {
+        index: usize,
+        running: bool,
+    },
+    SetVacuumPump {
+        index: usize,
+        running: bool,
+    },
+    SetSjae {
+        on: bool,
+    },
+    SetPeggingSteam {
+        open: bool,
+    },
+    SetMsiv {
+        open: bool,
     },
     BlockNis {
         channel: NisBlock,
@@ -241,6 +260,11 @@ impl Command {
             C::SetFieldBreaker { .. } => CommandKind::Manual(A::FieldBreaker),
             C::SetExcitation { .. } => CommandKind::Manual(A::Exciter),
             C::BlockNis { .. } => CommandKind::Manual(A::NisBlocks),
+            C::SetCwPump { .. } | C::SetVacuumPump { .. } | C::SetSjae { .. } => {
+                CommandKind::Manual(A::Condenser)
+            }
+            C::SetPeggingSteam { .. } => CommandKind::Manual(A::Deaerator),
+            C::SetMsiv { .. } => CommandKind::Manual(A::MainSteamIsolation),
             C::Scram | C::TripTurbine => CommandKind::Trip,
             C::ResetTrip | C::ResetTurbine => CommandKind::Reset,
             C::SetModuleMode { module, mode } => CommandKind::ModuleMode(*module, *mode),

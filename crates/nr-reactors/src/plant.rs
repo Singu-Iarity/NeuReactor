@@ -43,7 +43,7 @@ impl AutomationState {
             (ModuleId::TurbineGovernor, "target_mwe", 0.0),
             (ModuleId::TurbineGovernor, "ramp_mw_min", 30.0),
             (ModuleId::TurbineGovernor, "speed_rpm", 1800.0),
-            (ModuleId::TurbineGovernor, "accel_rpm_min", 300.0),
+            (ModuleId::TurbineGovernor, "accel_rpm_min", 120.0),
             (ModuleId::Excitation, "voltage_kv", 22.0),
             (ModuleId::PlantMaster, "target_mwe", 0.0),
         ];

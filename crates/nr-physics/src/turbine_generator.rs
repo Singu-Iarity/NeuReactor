@@ -56,6 +56,10 @@ pub struct TurbineGenerator {
     pub lockout: bool,
     /// Net shaft power (mechanical − losses) last step [W].
     pub net_power: f64,
+    /// Bearing vibration, peak-to-peak [µm].
+    pub vibration_um: f64,
+    /// Transient vibration from mechanical shocks, decays away [µm].
+    shock_um: f64,
     reverse_power_timer: f64,
 }
 
@@ -75,8 +79,15 @@ impl TurbineGenerator {
             health: 100.0,
             lockout: false,
             net_power: 0.0,
+            vibration_um: 25.0,
+            shock_um: 0.0,
             reverse_power_timer: 0.0,
         }
+    }
+
+    /// Total measured vibration [µm].
+    pub fn vibration(&self) -> f64 {
+        self.vibration_um + self.shock_um
     }
 
     pub fn rpm(&self) -> f64 {
@@ -106,9 +117,32 @@ impl TurbineGenerator {
         RATED_KV * self.speed * self.excitation / 0.5
     }
 
-    /// Windage and friction loss at the current speed [W].
+    /// Windage, friction and no-load steam losses at the current speed [W].
+    /// About 4 % of rating at synchronous speed, so a large turbine needs a
+    /// few percent of rated steam flow just to hold 1800 rpm.
     pub fn losses(&self) -> f64 {
-        self.rating * (0.005 * self.speed.powi(3) + 0.001 * self.speed)
+        self.rating * (0.035 * self.speed.powi(3) + 0.005 * self.speed)
+    }
+
+    /// Steady vibration the rotor settles to at the current speed and load.
+    /// Two rotor critical speeds (1150 and 1650 rpm) resonate: lingering on
+    /// them during run-up drives vibration up.
+    pub fn vibration_target(&self) -> f64 {
+        let rpm = self.rpm();
+        let crit = |c: f64, w: f64, a: f64| a * (-((rpm - c) / w).powi(2)).exp();
+        let load = (self.net_power / self.rating).clamp(0.0, 1.2);
+        let wear = (100.0 - self.health).max(0.0) * 1.5;
+        let spin = (rpm / RATED_RPM).min(1.1);
+        8.0 + 17.0 * spin
+            + 15.0 * load
+            + crit(1150.0, 70.0, 120.0)
+            + crit(1650.0, 50.0, 70.0)
+            + wear
+    }
+
+    /// A mechanical shock (bad synchronisation etc.).
+    pub fn kick(&mut self, um: f64) {
+        self.shock_um += um;
     }
 
     /// Worst normalised sync error; ≤ 1 means inside the sync window.
@@ -134,6 +168,16 @@ impl TurbineGenerator {
             + 0.05 * (2.0 / tau).sqrt() * dt.sqrt() * rng.normal();
 
         self.net_power = p_mech - self.losses();
+        // Rotor dynamics are slow to build up resonance (~20 s).
+        let target = self.vibration_target();
+        self.vibration_um += (target - self.vibration_um) * (dt / 20.0).min(1.0);
+        self.shock_um *= (-dt / 15.0f64).exp();
+        if self.vibration_um + self.shock_um > 200.0 && self.speed > 0.05 {
+            self.shock_um = 0.0;
+            self.vibration_um = target.min(150.0);
+            self.breaker = false;
+            return Some("Turbine high vibration");
+        }
         if self.breaker {
             self.speed = self.grid_hz / RATED_HZ;
             self.phase = 0.0;
@@ -188,6 +232,7 @@ impl TurbineGenerator {
         if s < 3.0 {
             let damage = (s - 1.0) * 2.0;
             self.damage(damage);
+            self.kick(25.0 * s);
             self.breaker = !self.lockout;
             CloseOutcome::Rough {
                 severity: s,
@@ -196,6 +241,7 @@ impl TurbineGenerator {
         } else {
             let damage = clamp(s * 5.0, 0.0, 60.0);
             self.damage(damage);
+            self.kick(60.0 + 20.0 * s);
             CloseOutcome::Tripped {
                 severity: s,
                 damage,
@@ -302,6 +348,25 @@ mod tests {
         assert!(matches!(tg.close(false), CloseOutcome::Refused(_)));
         tg.repair();
         assert_eq!(tg.close(false), CloseOutcome::Closed);
+    }
+
+    #[test]
+    fn lingering_on_a_critical_speed_vibrates() {
+        let mut rng = Rng::new(5);
+        let mut tg = rolling();
+        tg.speed = 1150.0 / 1800.0;
+        // Hold speed on the first critical.
+        for _ in 0..1200 {
+            let hold = tg.losses();
+            tg.step(hold, 0.05, &mut rng);
+        }
+        assert!(tg.vibration() > 110.0, "{}", tg.vibration());
+        tg.speed = 1.0;
+        for _ in 0..2400 {
+            let hold = tg.losses();
+            tg.step(hold, 0.05, &mut rng);
+        }
+        assert!(tg.vibration() < 40.0, "{}", tg.vibration());
     }
 
     #[test]

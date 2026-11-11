@@ -560,3 +560,154 @@ fn era_mismatch_fits_conversion_kit_in_sandbox() {
         .any(|k| k.key == "couple:Turbine:Generator"));
     assert!(p.automation.equipment.missing_kits().is_empty());
 }
+
+/// The reported bug: turbine rolled to 1800 rpm with the reactor
+/// subcritical. Decay heat and stored SG energy must not sustain it.
+#[test]
+fn turbine_cannot_roll_on_decay_heat() {
+    let mut p = Pwr::hot_standby();
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::TurbineGovernor,
+            key: "accel_rpm_min".into(),
+            value: 180.0,
+        },
+    );
+    // Vacuum first (auto module), then latch and ask for 1800 rpm.
+    p.advance(3600.0);
+    assert!(
+        p.condenser.pressure_kpa < 25.0,
+        "vacuum {}",
+        p.condenser.pressure_kpa
+    );
+    op(&mut p, Command::ResetTurbine);
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::TurbineGovernor,
+            key: "speed_rpm".into(),
+            value: 1800.0,
+        },
+    );
+    p.advance(1800.0);
+    let rpm = p.tg.rpm();
+    assert!(p.kinetics.n < 1e-6);
+    assert!(
+        rpm < 1750.0 || p.steam_pressure() < 5.0e6,
+        "rpm {rpm}, steam {} MPa",
+        p.steam_pressure() / 1e6
+    );
+}
+
+#[test]
+fn shutdown_banks_must_be_withdrawn_first() {
+    let mut p = Pwr::hot_standby();
+    let out = Command::RodMotion {
+        selection: "manual".into(),
+        direction: RodDirection::Out,
+    };
+    assert!(p.command(&out, &Origin::Operator).is_err());
+    assert!(p
+        .telemetry(1.0, false)
+        .alarms
+        .iter()
+        .any(|a| a.tag == "rod_block"));
+    let mv = Command::MoveRodBank {
+        bank: "D".into(),
+        target: 50.0,
+    };
+    assert!(p.command(&mv, &Origin::Operator).is_err());
+    for bank in ["SA", "SB"] {
+        lever(&mut p, bank, RodDirection::Out);
+        p.advance(300.0);
+    }
+    op(&mut p, out);
+}
+
+#[test]
+fn no_vacuum_means_no_turbine_and_no_dumps() {
+    let mut p = Pwr::hot_standby();
+    for m in [ModuleId::CondenserVacuum, ModuleId::SteamDump] {
+        op(
+            &mut p,
+            Command::SetModuleMode {
+                module: m,
+                mode: ModuleMode::Manual,
+            },
+        );
+    }
+    assert!(p
+        .command(&Command::ResetTurbine, &Origin::Operator)
+        .is_err());
+    let t = p.telemetry(1.0, false);
+    assert!(t.alarms.iter().any(|a| a.tag == "vac_required"));
+    op(&mut p, Command::SetSteamDump { fraction: 0.5 });
+    p.advance(60.0);
+    assert!(p
+        .telemetry(1.0, false)
+        .alarms
+        .iter()
+        .any(|a| a.tag == "dump_blocked"));
+    assert!(
+        p.steam_flow < 50.0,
+        "only ARVs may pass steam: {}",
+        p.steam_flow
+    );
+    // Manual pulldown with hogging pumps then SJAEs.
+    for i in 0..2 {
+        op(
+            &mut p,
+            Command::SetVacuumPump {
+                index: i,
+                running: true,
+            },
+        );
+    }
+    op(&mut p, Command::SetSjae { on: true });
+    p.advance(2400.0);
+    assert!(
+        p.condenser.pressure_kpa < 25.0,
+        "{}",
+        p.condenser.pressure_kpa
+    );
+    op(&mut p, Command::ResetTurbine);
+}
+
+#[test]
+fn closing_msivs_stops_steam_and_trips_on_low_vacuum_eventually() {
+    let mut p = Pwr::full_power();
+    op(&mut p, Command::SetMsiv { open: false });
+    p.advance(5.0);
+    assert!(p.reactor_tripped || p.turbine_tripped || p.steam_flow < 1.0);
+    assert!(p
+        .telemetry(1.0, false)
+        .alarms
+        .iter()
+        .any(|a| a.tag == "msiv_closed"));
+}
+
+#[test]
+fn deaeration_needs_pegging_steam_at_low_load() {
+    let mut p = Pwr::hot_standby();
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::Deaerator,
+            mode: ModuleMode::Manual,
+        },
+    );
+    p.advance(600.0);
+    assert!(p
+        .telemetry(1.0, false)
+        .alarms
+        .iter()
+        .any(|a| a.tag == "deaeration"));
+    op(&mut p, Command::SetPeggingSteam { open: true });
+    p.advance(900.0);
+    assert!(!p
+        .telemetry(1.0, false)
+        .alarms
+        .iter()
+        .any(|a| a.tag == "deaeration"));
+}

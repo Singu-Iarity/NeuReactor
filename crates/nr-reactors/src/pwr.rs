@@ -26,8 +26,8 @@ use nr_control::{Rps, RpsInputs};
 use nr_core::{clamp, lerp, steam, Rng, MPA};
 use nr_physics::turbine_generator::RATED_RPM;
 use nr_physics::{
-    CloseOutcome, DecayHeat, DelayedNeutronData, PointKinetics, Poisons, RodBank, Sensor,
-    SensorFault, TurbineGenerator,
+    CloseOutcome, Condenser, Deaerator, DecayHeat, DelayedNeutronData, PointKinetics, Poisons,
+    RodBank, Sensor, SensorFault, TurbineGenerator,
 };
 use std::collections::BTreeMap;
 
@@ -189,6 +189,13 @@ const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
     ("grid_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
     ("excitation_pct", 0.0, 0.0, (0.0, 100.0)),
     ("generator_health_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("turbine_vibration_um", 1.0, 1.5, (0.0, 300.0)),
+    ("condenser_kpa", 2.0, 0.1, (0.0, 110.0)),
+    ("condensing_temp_c", 5.0, 0.2, (0.0, 120.0)),
+    ("cw_flow_pct", 1.0, 0.5, (0.0, 120.0)),
+    ("hotwell_level_pct", 2.0, 0.3, (0.0, 100.0)),
+    ("da_pressure_mpa", 2.0, 0.003, (0.0, 1.5)),
+    ("da_temp_c", 5.0, 0.3, (0.0, 200.0)),
 ];
 
 /// Engineering units of one unit of controller imprecision per module.
@@ -260,6 +267,16 @@ pub struct Pwr {
     pub turbine_valve: f64,
     pub steam_dump: f64,
     pub turbine_tripped: bool,
+    pub turbine_trip_reason: Option<String>,
+    pub condenser: Condenser,
+    pub deaerator: Deaerator,
+    pub msiv_open: bool,
+    /// Turbine hall local checks done (comms); cleared by a turbine trip.
+    pub turbine_hall_ready: bool,
+    /// Grid dispatch permission to synchronise (comms).
+    pub grid_permission: bool,
+    vac_required_until: f64,
+    rod_block_until: f64,
     pub tg: TurbineGenerator,
     pub sync_block_until: f64,
     prev_breaker: bool,
@@ -376,6 +393,14 @@ impl Pwr {
             turbine_valve: p.turbine_valve_full,
             steam_dump: 0.0,
             turbine_tripped: false,
+            turbine_trip_reason: None,
+            condenser: Condenser::at_power(),
+            deaerator: Deaerator::at_power(),
+            msiv_open: true,
+            turbine_hall_ready: true,
+            grid_permission: true,
+            vac_required_until: -1.0,
+            rod_block_until: -1.0,
             tg: TurbineGenerator::synced(p.generator_rating),
             sync_block_until: -1.0,
             prev_breaker: true,
@@ -439,6 +464,8 @@ impl Pwr {
             ModuleId::SteamDump,
             ModuleId::TurbineGovernor,
             ModuleId::Excitation,
+            ModuleId::CondenserVacuum,
+            ModuleId::Deaerator,
         ] {
             plant.automation.modes.insert(m, ModuleMode::Auto);
         }
@@ -496,6 +523,12 @@ impl Pwr {
         plant.feed = 0.0;
         plant.turbine_valve = 0.0;
         plant.turbine_tripped = true;
+        plant.turbine_trip_reason = None;
+        plant.condenser = Condenser::at_atmosphere();
+        plant.deaerator = Deaerator::cold();
+        plant.turbine_hall_ready = false;
+        plant.grid_permission = false;
+        plant.rod_selection = "SA".into();
         plant.tg.breaker = false;
         plant.prev_breaker = false;
         plant.tg.field_breaker = false;
@@ -835,14 +868,21 @@ impl Pwr {
         let ps = self.steam_pressure();
         let cv = self.turbine_cv();
         let w_nom = self.steam_nominal();
+        let msiv = self.msiv_open;
 
-        let w_turb = if self.turbine_tripped {
+        let w_turb = if self.turbine_tripped || !msiv {
             0.0
         } else {
             self.turbine_valve * cv * ps
         };
-        let w_dump =
-            self.steam_dump * p.dump_capacity * w_nom * ps / steam::psat(p.steam_temp_full);
+        // Steam dumps discharge to the condenser: interlocked off without
+        // vacuum and circulating water (C-9).
+        let dump_ok = msiv && self.condenser.available();
+        let w_dump = if dump_ok {
+            self.steam_dump * p.dump_capacity * w_nom * ps / steam::psat(p.steam_temp_full)
+        } else {
+            0.0
+        };
         let w_arv = if ps > SG_ARV {
             (ps - SG_ARV) / (0.2 * MPA) * 0.1 * w_nom
         } else {
@@ -855,9 +895,12 @@ impl Pwr {
         };
         self.steam_flow = w_turb + w_dump + w_arv + w_safety;
 
-        // Feedwater heated by turbine extraction steam.
+        // Deaerator (extraction steam at load, pegging steam at low load) and
+        // feedwater heating.
         let load = clamp(w_turb / w_nom, 0.0, 1.0);
-        let t_feed_target = lerp(40.0, p.feed_temp_full, load);
+        self.deaerator.step(load, msiv && ps > 1.0e6, dt);
+        let t_feed_target =
+            lerp(40.0, p.feed_temp_full, load).max(self.deaerator.temperature() - 3.0);
         self.t_feed += (t_feed_target - self.t_feed) * (dt / 60.0);
         let h_fw = steam::h_liquid(self.t_feed);
         self.feed_flow = self.feed * self.feed_max() * w_nom;
@@ -868,14 +911,30 @@ impl Pwr {
         self.t_steam += (self.q_sg - q_out) / p.sg_capacitance * dt;
         self.sg_mass = (self.sg_mass + (self.feed_flow - self.steam_flow) * dt).max(0.0);
 
-        // Turbine-generator.
-        let p_mech = w_turb * (steam::hg(ps) - h_fw) * self.shaft_efficiency();
+        // Turbine-generator: output depends on condenser vacuum.
+        let p_avail = w_turb * (steam::hg(ps) - h_fw);
+        let p_mech = p_avail * self.shaft_efficiency() * self.condenser.efficiency();
+        let h_cond = steam::h_liquid(self.condenser.condensing_c.max(33.0));
+        // Heat rejected: turbine exhaust (energy not converted to shaft work;
+        // feedwater heating by extraction is internal to the cycle) plus
+        // steam dumped straight to the condenser.
+        let q_cond = (p_avail - p_mech).max(0.0) + w_dump * (steam::hg(ps) - h_cond);
+        self.condenser.capacity = self.automation.equipment.perf(Slot::Condenser);
+        self.condenser.step(q_cond, ps, msiv, dt);
+        // Hotwell: condensed steam in, condensate/feed out, auto makeup/reject.
+        let condensed = w_turb + w_dump;
+        self.condenser.hotwell_pct += ((condensed - self.feed_flow) / 2000.0
+            + (50.0 - self.condenser.hotwell_pct) * 0.002)
+            * dt;
+        self.condenser.hotwell_pct = clamp(self.condenser.hotwell_pct, 0.0, 100.0);
+
+        if !self.turbine_tripped && self.condenser.pressure_kpa > 30.0 {
+            self.trip_turbine_for("Turbine low condenser vacuum trip");
+        }
         if let Some(event) = self.tg.step(p_mech, dt, &mut self.rng) {
             match event {
-                "Turbine overspeed" => {
-                    self.events.push(PlantEvent::trip("Turbine overspeed trip"));
-                    self.trip_turbine();
-                }
+                "Turbine overspeed" => self.trip_turbine_for("Turbine overspeed trip"),
+                "Turbine high vibration" => self.trip_turbine_for("Turbine high vibration trip"),
                 other => self.events.push(PlantEvent::warn(&format!(
                     "{other}: generator breaker opened"
                 ))),
@@ -948,6 +1007,13 @@ impl Pwr {
         m.insert("grid_voltage_kv", self.tg.grid_kv);
         m.insert("excitation_pct", self.tg.excitation * 100.0);
         m.insert("generator_health_pct", self.tg.health);
+        m.insert("turbine_vibration_um", self.tg.vibration());
+        m.insert("condenser_kpa", self.condenser.pressure_kpa);
+        m.insert("condensing_temp_c", self.condenser.condensing_c);
+        m.insert("cw_flow_pct", self.condenser.cw_flow_frac() * 100.0);
+        m.insert("hotwell_level_pct", self.condenser.hotwell_pct);
+        m.insert("da_pressure_mpa", self.deaerator.pressure_mpa);
+        m.insert("da_temp_c", self.deaerator.temperature());
         m
     }
 
@@ -1160,6 +1226,11 @@ impl Pwr {
                 dt,
             );
             let pos: Vec<f64> = self.banks[2..].iter().map(|b| b.position).collect();
+            let speed = if speed > 0.0 && !self.shutdown_banks_out() {
+                0.0
+            } else {
+                speed
+            };
             let deltas =
                 overlap_sequence(&pos, self.p.rod_max_steps, self.p.rod_overlap, speed, dt);
             for (b, d) in self.banks[2..].iter_mut().zip(deltas) {
@@ -1220,6 +1291,29 @@ impl Pwr {
             );
         }
 
+        if auto(self, ModuleId::CondenserVacuum) {
+            let steam_ok =
+                self.msiv_open && self.steam_pressure() > nr_physics::condenser::SJAE_MIN_STEAM;
+            let p_kpa = self.r("condenser_kpa");
+            let c = &mut self.condenser;
+            c.cw_pumps = [true; 3];
+            c.sjae_on = steam_ok;
+            if p_kpa > 20.0 || !c.sjae_effective {
+                c.vacuum_pumps = [true, true];
+            } else if p_kpa < 12.0 {
+                c.vacuum_pumps = [false, false];
+            }
+        }
+
+        if auto(self, ModuleId::Deaerator) {
+            let da = self.r("da_pressure_mpa");
+            if da < 0.2 {
+                self.deaerator.pegging_steam = true;
+            } else if self.r("steam_flow_kg_s") > 0.25 * w_nom && da > 0.35 {
+                self.deaerator.pegging_steam = false;
+            }
+        }
+
         if auto(self, ModuleId::SteamDump) {
             let noload = self
                 .automation
@@ -1272,7 +1366,24 @@ impl Pwr {
         self.trip_turbine();
     }
 
+    fn trip_turbine_for(&mut self, reason: &str) {
+        if !self.turbine_tripped {
+            self.events.push(PlantEvent::trip(reason));
+            self.turbine_trip_reason = Some(reason.to_string());
+        }
+        self.trip_turbine();
+    }
+
+    fn shutdown_banks_out(&self) -> bool {
+        self.banks
+            .iter()
+            .filter(|b| b.shutdown_bank)
+            .all(|b| b.position >= b.max_steps)
+    }
+
     fn trip_turbine(&mut self) {
+        // Local roll checks must be redone after any trip.
+        self.turbine_hall_ready = false;
         if !self.turbine_tripped {
             self.turbine_tripped = true;
             self.turbine_valve = 0.0;
@@ -1312,6 +1423,7 @@ impl Pwr {
                 if self.reactor_tripped {
                     return deny("reactor trip is latched; reset before moving rods");
                 }
+                let sd_out = self.shutdown_banks_out();
                 let Some(b) = self
                     .banks
                     .iter_mut()
@@ -1319,6 +1431,10 @@ impl Pwr {
                 else {
                     return deny("unknown rod bank");
                 };
+                if !b.shutdown_bank && *target > b.position && !sd_out {
+                    self.rod_block_until = self.time + 5.0;
+                    return deny("ROD WITHDRAWAL BLOCKED: withdraw shutdown banks SA and SB fully (228 steps) first");
+                }
                 b.target = clamp(*target, 0.0, b.max_steps);
             }
             Command::RodMotion {
@@ -1336,6 +1452,15 @@ impl Pwr {
                 if self.reactor_tripped && *direction == RodDirection::Out {
                     return deny("reactor trip is latched; reset before withdrawing rods");
                 }
+                let control = selection.eq_ignore_ascii_case("manual")
+                    || self
+                        .banks
+                        .iter()
+                        .any(|b| !b.shutdown_bank && b.name.eq_ignore_ascii_case(selection));
+                if control && *direction == RodDirection::Out && !self.shutdown_banks_out() {
+                    self.rod_block_until = self.time + 5.0;
+                    return deny("ROD WITHDRAWAL BLOCKED: withdraw shutdown banks SA and SB fully (228 steps) first");
+                }
                 self.rod_selection = selection.clone();
                 self.rod_direction = *direction;
                 if *direction == RodDirection::Hold {
@@ -1345,6 +1470,28 @@ impl Pwr {
                 }
             }
             Command::SetBoration { mode } => self.boration = *mode,
+            Command::SetCwPump { index, running } => {
+                let Some(p) = self.condenser.cw_pumps.get_mut(*index) else {
+                    return deny("CW pump index must be 0-2");
+                };
+                *p = *running;
+            }
+            Command::SetVacuumPump { index, running } => {
+                let Some(p) = self.condenser.vacuum_pumps.get_mut(*index) else {
+                    return deny("vacuum pump index must be 0-1");
+                };
+                *p = *running;
+            }
+            Command::SetSjae { on } => self.condenser.sjae_on = *on,
+            Command::SetPeggingSteam { open } => self.deaerator.pegging_steam = *open,
+            Command::SetMsiv { open } => {
+                self.msiv_open = *open;
+                self.events.push(PlantEvent::warn(if *open {
+                    "Main steam isolation valves opened"
+                } else {
+                    "Main steam isolation valves closed"
+                }));
+            }
             Command::SetPressurizerHeaters { fraction } => {
                 self.heaters = clamp(*fraction, 0.0, 1.0)
             }
@@ -1358,7 +1505,12 @@ impl Pwr {
                 self.rcp_running[*index] = *running;
             }
             Command::SetFeedwater { fraction } => self.feed = clamp(*fraction, 0.0, 1.0),
-            Command::SetSteamDump { fraction } => self.steam_dump = clamp(*fraction, 0.0, 1.0),
+            Command::SetSteamDump { fraction } => {
+                if *fraction > 0.0 && !self.condenser.available() {
+                    self.vac_required_until = self.time + 8.0;
+                }
+                self.steam_dump = clamp(*fraction, 0.0, 1.0)
+            }
             Command::SetTurbineValve { fraction } => {
                 if self.turbine_tripped {
                     return deny("turbine is tripped; reset (latch) the turbine first");
@@ -1439,6 +1591,14 @@ impl Pwr {
                 if self.tg.speed > 1.05 {
                     return deny("turbine overspeed: wait for speed to fall");
                 }
+                if self.condenser.pressure_kpa > 25.0 {
+                    self.vac_required_until = self.time + 8.0;
+                    return deny("CONDENSER VACUUM REQUIRED: pull condenser vacuum below 25 kPa before latching the turbine");
+                }
+                if self.automation.game_mode == GameMode::Career && !self.turbine_hall_ready {
+                    return deny("call the turbine hall for roll checks before latching the turbine (Comms tab)");
+                }
+                self.turbine_trip_reason = None;
                 if self.turbine_tripped {
                     self.turbine_tripped = false;
                     self.turbine_valve = 0.0;
@@ -1773,191 +1933,317 @@ impl Pwr {
 
     // ------------------------------------------------------------- telemetry
 
+    /// Every annunciator window / status light currently lit, by panel.
     fn alarms(&self) -> Vec<Alarm> {
-        let mut a = Vec::new();
+        use Severity::{Alarm as A, Info as I, Trip as T, Warning as W};
+        let mut out = Vec::new();
         let mut add = |panel: &str, tag: &str, text: &str, sev: Severity| {
-            a.push(Alarm {
+            out.push(Alarm {
                 tag: tag.into(),
                 panel: panel.into(),
                 text: text.into(),
                 severity: sev,
             })
         };
-        let tavg = self.r("tavg_c");
-        // Reactor / NIS
-        if self.reactor_tripped {
-            add("reactor", "rx_trip", "REACTOR TRIP", Severity::Trip);
+        let mode = |m: ModuleId| self.automation.mode(m);
+        let r = |t: &str| self.r(t);
+        let tavg = r("tavg_c");
+        let power = r("nuclear_power_pct");
+        let tripped = self.reactor_tripped;
+
+        // ------------------------------------------------------- reactor
+        let rx = "reactor";
+        if tripped {
+            add(rx, "rx_trip", "REACTOR TRIP", T);
+        }
+        match mode(ModuleId::RodControl) {
+            ModuleMode::Auto => add(rx, "rod_auto", "ROD CONTROL IN AUTO", I),
+            ModuleMode::External => add(rx, "rod_auto", "ROD CONTROL EXTERNAL", I),
+            ModuleMode::Manual => add(rx, "rod_manual", "ROD CONTROL IN MANUAL", I),
+        }
+        if !tripped
+            && self
+                .banks
+                .iter()
+                .any(|b| (b.target - b.position).abs() > 0.01)
+        {
+            add(rx, "rods_moving", "RODS MOVING", I);
+        }
+        let sd_partial = self
+            .banks
+            .iter()
+            .any(|b| b.shutdown_bank && b.position > 0.0 && b.position < b.max_steps);
+        let ctl_out = self
+            .banks
+            .iter()
+            .any(|b| !b.shutdown_bank && b.position > 0.0);
+        if !tripped && (sd_partial || (ctl_out && !self.shutdown_banks_out())) {
+            add(rx, "sd_not_out", "SHUTDOWN BANKS NOT FULLY WITHDRAWN", W);
+        }
+        if self.time < self.rod_block_until {
+            add(rx, "rod_block", "ROD WITHDRAWAL BLOCKED", A);
+        }
+        if !tripped && power > 5.0 && self.banks[5].position < 80.0 {
+            if self.banks[5].position < 30.0 && self.banks[4].position < 128.0 {
+                add(rx, "rod_ins_lolo", "ROD INSERTION LIMIT LO-LO", A);
+            } else {
+                add(rx, "rod_ins_lo", "ROD INSERTION LIMIT LO", W);
+            }
+        }
+        if !tripped && self.rho.total > -0.0005 && self.kinetics.n > 1e-8 {
+            add(rx, "critical", "REACTOR CRITICAL", I);
+        }
+        if r("startup_rate_dpm") > 1.0 {
+            add(rx, "sur", "HIGH STARTUP RATE", W);
+        }
+        if self.kinetics.period > 0.0 && self.kinetics.period < 15.0 {
+            add(rx, "short_period", "SHORT PERIOD", A);
+        }
+        let prs = ["pr_n41_pct", "pr_n42_pct", "pr_n43_pct", "pr_n44_pct"].map(r);
+        let pr_max = prs.iter().cloned().fold(f64::MIN, f64::max);
+        let pr_min = prs.iter().cloned().fold(f64::MAX, f64::min);
+        if pr_max > 10.0 && pr_max - pr_min > 2.0 {
+            add(rx, "nis_dev", "NIS POWER RANGE CHANNEL DEVIATION", W);
         }
         if self.p6() {
-            add("reactor", "p6", "P-6 IR PERMISSIVE", Severity::Info);
+            add(rx, "p6", "P-6 IR PERMISSIVE", I);
         }
         if self.p10() {
-            add("reactor", "p10", "P-10 PR PERMISSIVE", Severity::Info);
-        }
-        if self.nis.sr_blocked {
-            add(
-                "reactor",
-                "sr_blocked",
-                "SR TRIP BLOCKED / HV OFF",
-                Severity::Info,
-            );
-        }
-        if self.nis.ir_blocked {
-            add("reactor", "ir_blocked", "IR TRIP BLOCKED", Severity::Info);
-        }
-        if self.nis.pr_low_blocked {
-            add(
-                "reactor",
-                "pr_low_blocked",
-                "PR LO SETPT TRIP BLOCKED",
-                Severity::Info,
-            );
+            add(rx, "p10", "P-10 PR PERMISSIVE", I);
         }
         if self.p6() && !self.nis.sr_blocked {
-            add(
-                "reactor",
-                "sr_block_permitted",
-                "SR BLOCK PERMITTED",
-                Severity::Warning,
-            );
+            add(rx, "sr_block_permitted", "SR BLOCK PERMITTED", W);
         }
-        if self.r("startup_rate_dpm") > 1.0 {
-            add("reactor", "sur", "HIGH STARTUP RATE", Severity::Warning);
+        if self.nis.sr_blocked {
+            add(rx, "sr_blocked", "SR TRIP BLOCKED / HV OFF", I);
         }
-        if !self.reactor_tripped
-            && self.banks[5].position < 30.0
-            && self.banks[4].position < 128.0
-            && self.r("nuclear_power_pct") > 5.0
-        {
-            add("reactor", "rod_ins", "ROD INSERTION LIMIT", Severity::Alarm);
+        if self.nis.ir_blocked {
+            add(rx, "ir_blocked", "IR TRIP BLOCKED", I);
         }
-        // RCS
-        if (tavg - self.tref()).abs() > 3.0 && !self.reactor_tripped && self.tg.breaker {
-            add(
-                "rcs",
-                "tavg_dev",
-                "TAVG / TREF DEVIATION",
-                Severity::Warning,
-            );
+        if self.nis.pr_low_blocked {
+            add(rx, "pr_low_blocked", "PR LO SETPT TRIP BLOCKED", I);
         }
-        let p = self.r("rcs_pressure_mpa");
+
+        // ----------------------------------------------------------- RCS
+        let rc = "rcs";
+        let p = r("rcs_pressure_mpa");
         if p > 15.9 {
-            add("rcs", "p_high", "PZR PRESS HIGH", Severity::Alarm);
+            add(rc, "p_high", "PZR PRESS HIGH", A);
         }
         if p < 15.1 {
-            add("rcs", "p_low", "PZR PRESS LOW", Severity::Alarm);
+            add(rc, "p_low", "PZR PRESS LOW", A);
         }
         if self.porv_open {
-            add("rcs", "porv", "PZR PORV OPEN", Severity::Alarm);
+            add(rc, "porv", "PZR PORV OPEN", A);
         }
-        let lvl = self.r("pzr_level_pct");
-        if (lvl - self.pzr_level_program(tavg)).abs() > 5.0 {
-            add(
-                "rcs",
-                "pzr_lvl_dev",
-                "PZR LEVEL DEVIATION",
-                Severity::Warning,
-            );
+        if self.pressure > PZR_SAFETY {
+            add(rc, "pzr_safety", "PZR SAFETY VALVE OPEN", T);
         }
-        if self.rcp_running.iter().any(|r| !r) {
-            add("rcs", "rcp", "RCP STOPPED", Severity::Warning);
+        let lvl = r("pzr_level_pct");
+        if lvl > 70.0 {
+            add(rc, "pzr_lvl_hi", "PZR LEVEL HIGH", A);
+        } else if lvl < 17.0 {
+            add(rc, "pzr_lvl_lo", "PZR LEVEL LOW", A);
+        } else if (lvl - self.pzr_level_program(tavg)).abs() > 5.0 {
+            add(rc, "pzr_lvl_dev", "PZR LEVEL DEVIATION", W);
         }
-        if self.r("rcs_flow_pct") < 92.0 {
-            add("rcs", "rcs_low_flow", "RCS LOW FLOW", Severity::Alarm);
+        if self.heaters > 0.05 {
+            add(rc, "heaters_on", "PZR HEATERS ON", I);
         }
-        // CVCS
-        match self.boration {
-            BorationMode::Borate => add("cvcs", "borating", "BORATION IN PROGRESS", Severity::Info),
-            BorationMode::Dilute => add("cvcs", "diluting", "DILUTION IN PROGRESS", Severity::Info),
-            BorationMode::Off => {}
+        if self.spray > 0.02 {
+            add(rc, "spray_open", "PZR SPRAY OPEN", I);
         }
-        if self.charging < 1.0 {
-            add(
-                "cvcs",
-                "charging_low",
-                "CHARGING FLOW LOW",
-                Severity::Warning,
-            );
-        }
-        // Steam & feed
-        let sg = self.r("sg_level_pct");
-        if !(38.0..=62.0).contains(&sg) {
-            add(
-                "steam",
-                "sg_lvl_dev",
-                "SG LEVEL DEVIATION",
-                Severity::Warning,
-            );
-        }
-        if sg < 20.0 {
-            add("steam", "sg_lvl_low", "SG LEVEL LOW", Severity::Alarm);
-        }
-        if self.steam_pressure() > SG_ARV {
-            add("steam", "sg_arv", "SG RELIEF VALVE OPEN", Severity::Alarm);
-        }
-        if self.steam_dump > 0.02 {
-            add("steam", "dump_open", "STEAM DUMP OPEN", Severity::Info);
-        }
-        // Turbine-generator
-        if self.turbine_tripped {
-            add("turbine", "turb_trip", "TURBINE TRIP", Severity::Alarm);
-        }
-        if self.tg.speed > 1.03 {
-            add("turbine", "overspeed", "TURBINE OVERSPEED", Severity::Alarm);
-        }
-        if self.tg.lockout {
-            add("turbine", "gen_lockout", "GEN LOCKOUT 86G", Severity::Trip);
-        }
-        if self.tg.health < 90.0 {
-            add("turbine", "gen_damage", "GENERATOR DAMAGE", Severity::Alarm);
-        }
-        if !self.tg.field_breaker {
-            add(
-                "turbine",
-                "field_open",
-                "FIELD BREAKER OPEN",
-                Severity::Info,
-            );
-        }
-        if self.time < self.sync_block_until {
-            add(
-                "turbine",
-                "sync_blocked",
-                "PHASE Δ OUT OF RANGE",
-                Severity::Alarm,
-            );
-        }
-        if self.tg.breaker && self.tg.net_power < 0.0 {
-            add(
-                "turbine",
-                "reverse_power",
-                "GEN REVERSE POWER",
-                Severity::Alarm,
-            );
-        }
-        if !self.tg.breaker && self.tg.speed > 0.97 && !self.turbine_tripped {
-            add("turbine", "ready_sync", "READY TO SYNC", Severity::Info);
-        }
-        // Plant computer
-        if self.training_mode {
-            add(
-                "computer",
-                "training",
-                "TRAINING MODE: RPS BYPASSED",
-                Severity::Info,
-            );
-        }
-        for (tag, s) in &self.sensors {
-            if s.fault != SensorFault::None {
+        for i in 0..4 {
+            if self.rcp_running[i] {
                 add(
-                    "computer",
-                    tag,
-                    &format!("INSTRUMENT FAULT {tag}"),
-                    Severity::Warning,
+                    rc,
+                    &format!("rcp{}_run", i + 1),
+                    &format!("RCP {} RUNNING", i + 1),
+                    I,
                 );
             }
         }
-        a
+        if self.rcp_running.iter().any(|r| !r) {
+            add(rc, "rcp", "RCP STOPPED", W);
+        }
+        if r("rcs_flow_pct") < 92.0 {
+            add(rc, "rcs_low_flow", "RCS LOW FLOW", A);
+        }
+        if (tavg - self.tref()).abs() > 3.0 && !tripped && self.tg.breaker {
+            add(rc, "tavg_dev", "TAVG / TREF DEVIATION", W);
+        }
+        if tavg > 315.0 {
+            add(rc, "tavg_high", "TAVG HIGH", A);
+        }
+        if steam::tsat(self.pressure) - r("thot_c") < 15.0 {
+            add(rc, "subcooling", "SUBCOOLING MARGIN LOW", A);
+        }
+
+        // ---------------------------------------------------------- CVCS
+        let cv = "cvcs";
+        match self.boration {
+            BorationMode::Borate => add(cv, "borating", "BORATION IN PROGRESS", I),
+            BorationMode::Dilute => add(cv, "diluting", "DILUTION IN PROGRESS", I),
+            BorationMode::Off => {}
+        }
+        if mode(ModuleId::BoronControl) == ModuleMode::Auto {
+            add(cv, "auto_makeup", "AUTO MAKEUP ACTIVE", I);
+        }
+        if self.charging < 1.0 {
+            add(cv, "charging_low", "CHARGING FLOW LOW", W);
+        }
+        if self.charging > 18.0 {
+            add(cv, "charging_high", "CHARGING FLOW HIGH", W);
+        }
+        if self.letdown < 1.0 {
+            add(cv, "letdown_iso", "LETDOWN ISOLATED", W);
+        }
+
+        // ------------------------------------------------ steam & feed
+        let st = "steam";
+        if self.msiv_open {
+            add(st, "msiv_open", "MSIVs OPEN", I);
+        } else {
+            add(st, "msiv_closed", "MSIVs CLOSED", W);
+        }
+        if mode(ModuleId::SteamDump) == ModuleMode::Auto && self.condenser.available() {
+            add(st, "dump_armed", "STEAM DUMP ARMED", I);
+        }
+        if self.steam_dump > 0.02 && self.condenser.available() {
+            add(st, "dump_open", "STEAM DUMP OPEN", I);
+        }
+        if self.steam_dump > 0.02 && !self.condenser.available() {
+            add(st, "dump_blocked", "STEAM DUMP BLOCKED (NO VACUUM)", A);
+        }
+        if self.feed > 0.01 {
+            add(st, "feed_pumps", "FEED PUMPS RUNNING", I);
+        }
+        let sg = r("sg_level_pct");
+        if sg > 75.0 {
+            add(st, "sg_lvl_hi", "SG LEVEL HIGH", A);
+        } else if sg < 15.0 {
+            add(st, "sg_lvl_lolo", "SG LEVEL LO-LO", A);
+        } else if sg < 30.0 {
+            add(st, "sg_lvl_low", "SG LEVEL LOW", W);
+        } else if !(38.0..=62.0).contains(&sg) {
+            add(st, "sg_lvl_dev", "SG LEVEL DEVIATION", W);
+        }
+        let w_nom = self.steam_nominal();
+        if (r("steam_flow_kg_s") - r("feed_flow_kg_s")).abs() > 0.1 * w_nom {
+            add(st, "flow_mismatch", "STEAM / FEED FLOW MISMATCH", W);
+        }
+        if self.steam_pressure() > SG_ARV {
+            add(st, "sg_arv", "ATMOSPHERIC RELIEF OPEN", A);
+        }
+        let vac = r("condenser_kpa");
+        if vac > 15.0 && (!self.turbine_tripped || self.tg.speed > 0.1 || self.condenser.sjae_on) {
+            add(st, "vac_low", "CONDENSER VACUUM LOW", A);
+        }
+        if self.time < self.vac_required_until {
+            add(st, "vac_required", "CONDENSER VACUUM REQUIRED", A);
+        }
+        if self.condenser.sjae_on && !self.condenser.sjae_effective {
+            add(st, "sjae_low", "SJAE MOTIVE STEAM LOW", W);
+        }
+        if self.condenser.sjae_effective {
+            add(st, "sjae_on", "SJAEs IN SERVICE", I);
+        }
+        if self.condenser.vacuum_pumps.iter().any(|v| *v) {
+            add(st, "vac_pumps", "VACUUM PUMPS RUNNING", I);
+        }
+        if self.condenser.cw_pumps.iter().any(|p| !p) {
+            add(st, "cw_trip", "CW PUMP OFF", W);
+        }
+        let hw = self.condenser.hotwell_pct;
+        if hw > 75.0 {
+            add(st, "hotwell_hi", "HOTWELL LEVEL HIGH", W);
+        } else if hw < 25.0 {
+            add(st, "hotwell_lo", "HOTWELL LEVEL LOW", W);
+        }
+        if !self.deaerator.effective() {
+            add(st, "deaeration", "DEAERATION NOT EFFECTIVE", W);
+        }
+        if self.deaerator.pegging_steam {
+            add(st, "pegging", "DA PEGGING STEAM ON", I);
+        }
+        if self.feed > 0.05 && self.t_feed < 100.0 {
+            add(st, "feed_temp_low", "FEEDWATER TEMP LOW", W);
+        }
+
+        // ------------------------------------------------ turbine-generator
+        let tb = "turbine";
+        if self.turbine_tripped {
+            add(tb, "turb_trip", "TURBINE TRIP", A);
+        } else {
+            add(tb, "turb_latched", "TURBINE LATCHED", I);
+        }
+        let rpm = self.tg.rpm();
+        if rpm < 10.0 {
+            add(tb, "turning_gear", "TURBINE ON TURNING GEAR", I);
+        }
+        if mode(ModuleId::TurbineGovernor) == ModuleMode::Auto {
+            add(tb, "gov_auto", "GOVERNOR IN AUTO", I);
+        }
+        if mode(ModuleId::GeneratorSync) == ModuleMode::Auto {
+            add(tb, "autosync", "AUTO-SYNC ACTIVE", I);
+        }
+        if self.sync_check_active() {
+            add(tb, "synccheck", "SYNC-CHECK ACTIVE", I);
+        }
+        if self.tg.breaker {
+            add(tb, "gen_online", "GENERATOR ON-LINE", I);
+        }
+        if self.tg.speed > 1.03 {
+            add(tb, "overspeed", "TURBINE OVERSPEED", A);
+        }
+        let vib = r("turbine_vibration_um");
+        if vib > 125.0 {
+            add(tb, "high_vib", "TURBINE HIGH VIBRATION", A);
+        }
+        if let Some(reason) = &self.turbine_trip_reason {
+            if reason.contains("vacuum") {
+                add(tb, "low_vac_trip", "LOW VACUUM TRIP", T);
+            } else if reason.contains("vibration") {
+                add(tb, "vib_trip", "HIGH VIBRATION TRIP", T);
+            }
+        }
+        if !self.turbine_hall_ready && !self.turbine_tripped && rpm > 100.0 {
+            add(tb, "hall_checks", "TURBINE ROLL WITHOUT HALL CHECKS", W);
+        }
+        if self.tg.lockout {
+            add(tb, "gen_lockout", "GEN LOCKOUT 86G", T);
+        }
+        if self.tg.health < 90.0 {
+            add(tb, "gen_damage", "GENERATOR DAMAGE", A);
+        }
+        if !self.tg.field_breaker {
+            add(tb, "field_open", "FIELD BREAKER OPEN", I);
+        }
+        if self.time < self.sync_block_until {
+            add(tb, "sync_blocked", "PHASE Δ OUT OF RANGE", A);
+        }
+        if self.tg.breaker && self.tg.net_power < 0.0 {
+            add(tb, "reverse_power", "GEN REVERSE POWER", A);
+        }
+        let ready = !self.tg.breaker && self.tg.speed > 0.97 && !self.turbine_tripped;
+        if ready {
+            add(tb, "ready_sync", "READY TO SYNC", I);
+            if !self.grid_permission {
+                add(tb, "grid_perm", "GRID PERMISSION REQUIRED", W);
+            }
+        }
+
+        // ----------------------------------------------- plant computer
+        let pc = "computer";
+        if self.training_mode {
+            add(pc, "training", "TRAINING MODE: RPS BYPASSED", I);
+        }
+        for (tag, s) in &self.sensors {
+            if s.fault != SensorFault::None {
+                add(pc, tag, &format!("INSTRUMENT FAULT {tag}"), W);
+            }
+        }
+        out
     }
 
     pub fn telemetry(&self, time_scale: f64, paused: bool) -> Telemetry {
@@ -1990,6 +2276,15 @@ impl Pwr {
             coolant_pumps: self.rcp_running.to_vec(),
             generator_breaker: self.tg.breaker,
             field_breaker: self.tg.field_breaker,
+            cw_pumps: self.condenser.cw_pumps.to_vec(),
+            vacuum_pumps: self.condenser.vacuum_pumps.to_vec(),
+            sjae_on: self.condenser.sjae_on,
+            sjae_effective: self.condenser.sjae_effective,
+            pegging_steam: self.deaerator.pegging_steam,
+            msiv_open: self.msiv_open,
+            condenser_available: self.condenser.available(),
+            turbine_hall_ready: self.turbine_hall_ready,
+            grid_permission: self.grid_permission,
             generator_lockout: self.tg.lockout,
             sync_check_active: self.sync_check_active(),
             sync_blocked: self.time < self.sync_block_until,

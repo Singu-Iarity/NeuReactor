@@ -91,6 +91,17 @@ pub struct Telemetry {
     pub coolant_pumps: Vec<bool>,
     pub generator_breaker: bool,
     pub field_breaker: bool,
+    pub cw_pumps: Vec<bool>,
+    pub vacuum_pumps: Vec<bool>,
+    pub sjae_on: bool,
+    pub sjae_effective: bool,
+    pub pegging_steam: bool,
+    pub msiv_open: bool,
+    pub condenser_available: bool,
+    /// Turbine hall local checks complete (comms).
+    pub turbine_hall_ready: bool,
+    /// Grid dispatch permission to synchronise (comms).
+    pub grid_permission: bool,
     pub generator_lockout: bool,
     /// Sync-check relay is supervising breaker closure.
     pub sync_check_active: bool,
