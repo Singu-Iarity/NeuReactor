@@ -116,7 +116,8 @@ fn startup_to_sync() -> Pwr {
             value: 1800.0,
         },
     );
-    p.advance(420.0);
+    // Default acceleration is 120 rpm/min: about 15 minutes to 1800 rpm.
+    p.advance(1100.0);
     assert!(
         (reading(&p, "turbine_speed_rpm") - 1800.0).abs() < 10.0,
         "rpm {}",
@@ -223,6 +224,10 @@ fn sync_check_blocks_and_lamp_flashes() {
             mode: ModuleMode::Manual,
         },
     );
+    // Crack the valve open a little so the machine runs fast and the
+    // synchroscope sweeps round.
+    let v = p.turbine_valve + 0.004;
+    op(&mut p, Command::SetTurbineValve { fraction: v });
     wait_for_phase(&mut p, 60.0, 170.0);
     let r = p.command(
         &Command::SetGeneratorBreaker { closed: true },
