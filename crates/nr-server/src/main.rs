@@ -109,9 +109,14 @@ fn sim_loop(world: Arc<Mutex<World>>) {
                 plant.events.push(e);
             }
         }
+        // AGC: the unit load controller follows grid dispatch (needs the
+        // plant master in AUTO and the grid dispatch link).
+        if station.agc && !plant.agc_available() {
+            station.agc = false;
+        }
         if station.agc && station.demand_mwe > 0.0 {
             let gross = station.demand_mwe + plant.p.house_load_mwe;
-            let module = nr_api::ModuleId::TurbineGovernor;
+            let module = nr_api::ModuleId::PlantMaster;
             let cur = plant
                 .automation
                 .setpoint(module, "target_mwe")

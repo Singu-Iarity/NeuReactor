@@ -8,7 +8,7 @@ export const windows = [
   ["rx_trip", "REACTOR TRIP"], ["rod_auto", "ROD CONTROL IN AUTO"], ["rod_manual", "ROD CONTROL IN MANUAL"], ["rods_moving", "RODS MOVING"], ["critical", "REACTOR CRITICAL"], ["sur", "HIGH STARTUP RATE"],
   ["sd_not_out", "SHUTDOWN BANKS NOT FULLY WITHDRAWN"], ["rod_block", "ROD WITHDRAWAL BLOCKED"], ["rod_ins_lo", "ROD INSERTION LIMIT LO"], ["rod_ins_lolo", "ROD INSERTION LIMIT LO-LO"], ["short_period", "SHORT PERIOD"], ["nis_dev", "NIS PR CHANNEL DEVIATION"],
   ["p6", "P-6 IR PERMISSIVE"], ["p10", "P-10 PR PERMISSIVE"], ["sr_block_permitted", "SR BLOCK PERMITTED"], ["sr_blocked", "SR TRIP BLOCKED / HV OFF"], ["ir_blocked", "IR TRIP BLOCKED"], ["pr_low_blocked", "PR LO SETPT TRIP BLOCKED"],
-  ["rod_dev", "ROD GROUP DEVIATION"], ["qptr", "QUADRANT POWER TILT"], ["balancer", "ROD BALANCER ACTIVE"], ["", ""], ["", ""], ["", ""],
+  ["rod_dev", "ROD GROUP DEVIATION"], ["qptr", "QUADRANT POWER TILT"], ["balancer", "ROD BALANCER ACTIVE"], ["rpc_auto", "REACTOR POWER CONTROL IN AUTO"], ["", ""], ["", ""],
 ];
 
 const FIRST_OUT = [
@@ -67,6 +67,15 @@ export function build(root, ctx) {
   });
   const rodMa = maStation("ROD CONTROL (Tavg)", { module: "rod_control", pvTag: "tavg_c", spTag: "tref_c", spKey: "tavg_full_c", spStep: 0.1, devSpan: 3 }, ctx);
   const rxReset = pushbutton("RX TRIP RESET", { onPress: () => ctx.send({ type: "reset_trip" }) });
+  // Reactor power controller (supervises rod control and boron).
+  const rpcMa = maStation("REACTOR POWER CONTROL", {
+    module: "reactor_power", pvTag: "nuclear_power_pct", spKey: "power_pct", spStep: 0.5, digits: 1, devSpan: 5, range: [0, 120],
+  }, ctx);
+  const rpcMode = selector("POWER CTRL MODE", [{ label: "ROD", value: 0 }, { label: "BORON", value: 1 }, { label: "COORD", value: 2 }],
+    v => ctx.send({ type: "set_setpoint", module: "reactor_power", key: "mode", value: v }));
+  const rpcRamp = selector("POWER RAMP %/min", [{ label: "0.5", value: 0.5 }, { label: "2", value: 2 }, { label: "5", value: 5 }],
+    v => ctx.send({ type: "set_setpoint", module: "reactor_power", key: "ramp_pct_min", value: v }));
+  const pref = readout("POWER REFERENCE [%]", { digits: 1 });
 
   // ---- first out
   const fo = h("div", { class: "firstout" }, ...FIRST_OUT.map(n => h("div", { class: "fo-win", "data-trip": n }, n.toUpperCase())));
@@ -85,6 +94,9 @@ export function build(root, ctx) {
         h("div", { class: "row" }, rodMa.el, balancer.el, groupGrid),
         h("div", { class: "row tight" }, rxReset.el, ctx.scramPair())),
       h("section", { class: "sect", "data-section": "reactor.rods" }, plate("CORE MAP — ROD POSITION INDICATION"), core.el),
+      h("section", { class: "sect", "data-section": "reactor.rods" }, plate("REACTOR POWER CONTROLLER"),
+        h("p", { class: "note" }, "Holds reactor power at a setpoint (rod control must be in AUTO). ROD: rods follow the setpoint, startup rate limited. BORON: dilute/borate with rods parked. COORD: rods for fast changes, boron returns the lead bank to its band. Analog cabinets: ROD only."),
+        h("div", { class: "row" }, rpcMa.el, h("div", { class: "col" }, rpcMode.el, rpcRamp.el, pref.el))),
       h("section", { class: "sect", "data-section": "reactor.firstout" }, plate("REACTOR TRIP FIRST OUT"), fo)));
 
   return t => {
@@ -108,6 +120,11 @@ export function build(root, ctx) {
     mwt.update(R.thermal_power_mw);
     t.rods.forEach((r, i) => bars[i].update(r.position, r.target));
     core.update(t.rods, selection);
+    rpcMa.update(t);
+    const rpc = t.modules.find(m => m.id === "reactor_power");
+    rpcMode.update(rpc?.setpoints.mode);
+    rpcRamp.update(rpc?.setpoints.ramp_pct_min);
+    pref.update(t.readings.power_ref_pct);
     speed.update(t.rod_speed_spm, !manual0());
     balancer.update(ctx.setpoint("rod_control", "balancer_speed"));
     const hasGrid = t.upgrades.find(u => u.id === "rod_group_select")?.installed;

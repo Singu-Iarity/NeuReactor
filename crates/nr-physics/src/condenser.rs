@@ -130,12 +130,19 @@ impl Condenser {
     }
 }
 
+fn one() -> f64 {
+    1.0
+}
+
 /// Deaerating feedwater heater. Oxygen is only stripped when the deaerator is
 /// above ~0.15 MPa (saturation ~111 °C), heated by turbine extraction steam
 /// at load or by pegging steam from main steam at low load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deaerator {
     pub pressure_mpa: f64,
+    /// Equipment quality: better deaerators strip oxygen at lower pressure.
+    #[serde(default = "one")]
+    pub quality: f64,
     pub pegging_steam: bool,
     pub level_pct: f64,
 }
@@ -144,6 +151,7 @@ impl Deaerator {
     pub fn at_power() -> Self {
         Self {
             pressure_mpa: 0.9,
+            quality: 1.0,
             pegging_steam: false,
             level_pct: 55.0,
         }
@@ -152,13 +160,14 @@ impl Deaerator {
     pub fn cold() -> Self {
         Self {
             pressure_mpa: 0.11,
+            quality: 1.0,
             pegging_steam: false,
             level_pct: 55.0,
         }
     }
 
     pub fn effective(&self) -> bool {
-        self.pressure_mpa > 0.15
+        self.pressure_mpa > 0.15 / self.quality
     }
 
     pub fn temperature(&self) -> f64 {

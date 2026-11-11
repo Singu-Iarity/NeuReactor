@@ -32,6 +32,8 @@ pub enum UpgradeId {
     DigitalExciter,
     PlantProcessComputer,
     RodGroupSelect,
+    DigitalCondenserControls,
+    GridDispatchLink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +170,8 @@ pub const CATALOG: &[UpgradeInfo] = &[
         sections: &["computer.recorders", "computer.log", "computer.instructor"],
     },
     ROD_GROUP_SELECT,
+    DIGITAL_CONDENSER,
+    GRID_DISPATCH_LINK,
 ];
 
 /// Board hardware entries appended to the catalog.
@@ -179,6 +183,27 @@ pub const ROD_GROUP_SELECT: UpgradeInfo = UpgradeInfo {
     description: "Lit pushbutton matrix on the rod control panel: select a single rod group (e.g. D2) for the IN/HOLD/OUT lever to realign groups by hand.",
     price: 600_000,
     sections: &[],
+};
+
+pub const DIGITAL_CONDENSER: UpgradeInfo = UpgradeInfo {
+    id: U::DigitalCondenserControls,
+    kind: UpgradeKind::PanelPackage,
+    computer: Some(U::PlantProcessComputer),
+    name: "Digital Condenser & Feed Train Controls",
+    description:
+        "Modern condenser, air removal and deaerator panels wired to the plant process computer.",
+    price: 1_800_000,
+    sections: &["steam.condenser", "steam.deaerator"],
+};
+
+pub const GRID_DISPATCH_LINK: UpgradeInfo = UpgradeInfo {
+    id: U::GridDispatchLink,
+    kind: UpgradeKind::PanelPackage,
+    computer: Some(U::PlantProcessComputer),
+    name: "Grid Dispatch Link (AGC)",
+    description: "Data link from the grid operator to the plant computer: modern grid station and automatic generation control (the unit load controller follows dispatch).",
+    price: 3_500_000,
+    sections: &["grid.station"],
 };
 
 pub fn info(id: UpgradeId) -> &'static UpgradeInfo {

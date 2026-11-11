@@ -413,11 +413,19 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
         }
         "accept" => {
             let target = w.station.accept(t).ok_or("no pending load request")?;
-            // Hand the new load to the turbine governor if it is in AUTO.
+            // Hand the new load to the unit load controller if it is in AUTO,
+            // otherwise straight to the turbine governor.
             let gross = target + w.plant.p.house_load_mwe;
+            let module = if w.plant.automation.mode(modules::ModuleId::PlantMaster)
+                == modules::ModuleMode::Auto
+            {
+                modules::ModuleId::PlantMaster
+            } else {
+                modules::ModuleId::TurbineGovernor
+            };
             let _ = w.plant.command(
                 &Command::SetSetpoint {
-                    module: modules::ModuleId::TurbineGovernor,
+                    module,
                     key: "target_mwe".into(),
                     value: gross,
                 },
@@ -427,6 +435,9 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
         }
         "agc" => {
             let a: AgcReq = serde_json::from_str(body).map_err(parse)?;
+            if a.on && !w.plant.agc_available() {
+                return Err("AGC needs the Plant Master / Unit Load Controller in AUTO and the Grid Dispatch Link".into());
+            }
             w.station.agc = a.on;
             Ok(())
         }

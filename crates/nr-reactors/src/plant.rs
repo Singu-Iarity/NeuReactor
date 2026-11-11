@@ -47,6 +47,9 @@ impl AutomationState {
             (ModuleId::TurbineGovernor, "accel_rpm_min", 120.0),
             (ModuleId::Excitation, "voltage_kv", 22.0),
             (ModuleId::PlantMaster, "target_mwe", 0.0),
+            (ModuleId::ReactorPower, "power_pct", 10.0),
+            (ModuleId::ReactorPower, "ramp_pct_min", 2.0),
+            (ModuleId::ReactorPower, "mode", 0.0),
         ];
         for (m, k, v) in defaults {
             s.setpoint_set(*m, k, *v);

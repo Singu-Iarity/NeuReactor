@@ -79,6 +79,10 @@ pub enum Slot {
     RodDrives,
     Pressurizer,
     BoardInstruments,
+    CirculatingWater,
+    AirRemoval,
+    Deaerator,
+    SteamIsolation,
 }
 
 pub struct SlotInfo {
@@ -92,6 +96,34 @@ pub struct SlotInfo {
 }
 
 pub const SLOTS: &[SlotInfo] = &[
+    SlotInfo {
+        slot: Slot::CirculatingWater,
+        name: "Circulating Water Pumps",
+        base_price: 30e6,
+        year_offset: 1,
+        effect: "Condenser cooling capacity (vacuum at load)",
+    },
+    SlotInfo {
+        slot: Slot::AirRemoval,
+        name: "Condenser Air Removal (Vacuum Pumps & SJAEs)",
+        base_price: 12e6,
+        year_offset: 2,
+        effect: "Vacuum pulldown speed and attainable vacuum",
+    },
+    SlotInfo {
+        slot: Slot::Deaerator,
+        name: "Condensate Pumps & Deaerator",
+        base_price: 22e6,
+        year_offset: 3,
+        effect: "Feedwater heating / deaeration",
+    },
+    SlotInfo {
+        slot: Slot::SteamIsolation,
+        name: "Main Steam Isolation Valves",
+        base_price: 10e6,
+        year_offset: 4,
+        effect: "Steam line isolation (tightness)",
+    },
     SlotInfo {
         slot: Slot::Turbine,
         name: "Main Turbine",
@@ -267,6 +299,8 @@ pub fn upgrade_year(u: UpgradeId) -> i32 {
     match u {
         U::PlantProcessComputer => 1980,
         U::RodGroupSelect => 1966,
+        U::DigitalCondenserControls => 1993,
+        U::GridDispatchLink => 1998,
         U::TurbineControlComputer => 1982,
         U::SolidStateRodControl => 1984,
         U::GeneratorSyncInterface => 1985,
@@ -288,7 +322,10 @@ pub fn module_component(m: ModuleId) -> Option<Slot> {
         M::PressurizerPressure | M::PressurizerLevel => Some(Slot::Pressurizer),
         M::RcpSequencer => Some(Slot::CoolantPumps),
         M::FeedwaterLevel | M::AuxFeedAutoStart => Some(Slot::FeedPumps),
-        M::Deaerator | M::CondenserVacuum | M::SteamDump => Some(Slot::Condenser),
+        M::CondenserVacuum => Some(Slot::AirRemoval),
+        M::Deaerator => Some(Slot::Deaerator),
+        M::SteamDump => Some(Slot::Condenser),
+        M::ReactorPower => Some(Slot::RodDrives),
         M::TurbineGovernor => Some(Slot::Turbine),
         M::GeneratorSync | M::Excitation => Some(Slot::Generator),
         _ => None,
@@ -302,6 +339,9 @@ pub const COUPLINGS: &[(Slot, Slot)] = &[
     (Slot::Condenser, Slot::FeedPumps),
     (Slot::FeedPumps, Slot::SteamGenerators),
     (Slot::CoolantPumps, Slot::SteamGenerators),
+    (Slot::Condenser, Slot::CirculatingWater),
+    (Slot::Condenser, Slot::AirRemoval),
+    (Slot::FeedPumps, Slot::Deaerator),
 ];
 
 /// A conversion / interface kit needed because two connected pieces of

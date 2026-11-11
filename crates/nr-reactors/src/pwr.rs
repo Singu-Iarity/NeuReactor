@@ -190,6 +190,7 @@ const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
     ("excitation_pct", 0.0, 0.0, (0.0, 100.0)),
     ("generator_health_pct", 0.0, 0.0, (0.0, 100.0)),
     ("turbine_vibration_um", 1.0, 1.5, (0.0, 300.0)),
+    ("power_ref_pct", 0.0, 0.0, (0.0, 120.0)),
     ("condenser_kpa", 2.0, 0.1, (0.0, 110.0)),
     ("condensing_temp_c", 5.0, 0.2, (0.0, 120.0)),
     ("cw_flow_pct", 1.0, 0.5, (0.0, 120.0)),
@@ -201,6 +202,7 @@ const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
 /// Engineering units of one unit of controller imprecision per module.
 fn bias_scale(m: ModuleId) -> f64 {
     match m {
+        ModuleId::ReactorPower => 0.5,
         ModuleId::RodControl => 1.0,
         ModuleId::PressurizerPressure => 0.08,
         ModuleId::PressurizerLevel => 3.0,
@@ -254,6 +256,8 @@ pub struct Pwr {
     pub rod_spm: f64,
     /// Rod balancer currently realigning each bank.
     balancing: [bool; 6],
+    /// Ramped reactor power reference of the reactor power controller [%].
+    pub power_ref: f64,
     pub nis: NisState,
 
     // Primary
@@ -382,6 +386,7 @@ impl Pwr {
             rod_direction: RodDirection::Hold,
             rod_spm: 48.0,
             balancing: [false; 6],
+            power_ref: 100.0,
             nis: NisState {
                 sr_blocked: true,
                 ir_blocked: true,
@@ -951,7 +956,10 @@ impl Pwr {
         // feedwater heating by extraction is internal to the cycle) plus
         // steam dumped straight to the condenser.
         let q_cond = (p_avail - p_mech).max(0.0) + w_dump * (steam::hg(ps) - h_cond);
-        self.condenser.capacity = self.automation.equipment.perf(Slot::Condenser);
+        let eq = &self.automation.equipment;
+        self.condenser.capacity = eq.perf(Slot::Condenser) * eq.perf(Slot::CirculatingWater);
+        self.condenser.air_removal = eq.perf(Slot::AirRemoval).powi(4);
+        self.deaerator.quality = eq.perf(Slot::Deaerator);
         self.condenser.step(q_cond, ps, msiv, dt);
         // Hotwell: condensed steam in, condensate/feed out, auto makeup/reject.
         let condensed = w_turb + w_dump;
@@ -1044,6 +1052,7 @@ impl Pwr {
         m.insert("excitation_pct", self.tg.excitation * 100.0);
         m.insert("generator_health_pct", self.tg.health);
         m.insert("turbine_vibration_um", self.tg.vibration());
+        m.insert("power_ref_pct", self.power_ref);
         m.insert("condenser_kpa", self.condenser.pressure_kpa);
         m.insert("condensing_temp_c", self.condenser.condensing_c);
         m.insert("cw_flow_pct", self.condenser.cw_flow_frac() * 100.0);
@@ -1253,14 +1262,61 @@ impl Pwr {
             }
         }
 
+        let rpc = auto(self, ModuleId::ReactorPower) && self.module_usable(ModuleId::ReactorPower);
+        let rpc_mode = if matches!(
+            self.automation
+                .equipment
+                .controllers
+                .get(&ModuleId::ReactorPower),
+            Some(Controller::Analog { .. })
+        ) {
+            0
+        } else {
+            self.automation
+                .setpoint(ModuleId::ReactorPower, "mode")
+                .unwrap_or(0.0)
+                .round() as i32
+        };
+        let p_now = self.r("nuclear_power_pct");
+        let sur = self.r("startup_rate_dpm");
+        if rpc {
+            let sp = self
+                .automation
+                .setpoint(ModuleId::ReactorPower, "power_pct")
+                .unwrap_or(10.0);
+            let ramp = self
+                .automation
+                .setpoint(ModuleId::ReactorPower, "ramp_pct_min")
+                .unwrap_or(2.0);
+            let max = ramp / 60.0 * dt;
+            self.power_ref += clamp(sp - self.power_ref, -max, max);
+        }
         if auto(self, ModuleId::RodControl) && !self.reactor_tripped {
-            let speed = self.rod_ctl.update(
-                tavg,
-                tref + self.bias(ModuleId::RodControl),
-                self.r("nuclear_power_pct") / 100.0,
-                self.turbine_load(),
-                dt,
-            );
+            let speed = if rpc {
+                // Power control: rods follow the power reference (not in BORON mode),
+                // never faster than a 0.7 dpm startup rate.
+                let err = self.power_ref - p_now + self.bias(ModuleId::ReactorPower);
+                let mut v = if rpc_mode == 1 || err.abs() < 0.3 {
+                    0.0
+                } else {
+                    clamp(err * 0.15, -1.2, 1.2)
+                };
+                if v > 0.0 && sur > 0.7 {
+                    v = 0.0;
+                }
+                if v < 0.0 && sur < -0.5 {
+                    v = 0.0;
+                }
+                v
+            } else {
+                self.rod_ctl.update(
+                    tavg,
+                    tref + self.bias(ModuleId::RodControl),
+                    p_now / 100.0,
+                    self.turbine_load(),
+                    dt,
+                )
+            };
             let pos: Vec<f64> = self.banks[2..].iter().map(|b| b.position).collect();
             let speed = if speed > 0.0 && !self.shutdown_banks_out() {
                 0.0
@@ -1272,6 +1328,38 @@ impl Pwr {
             for (b, d) in self.banks[2..].iter_mut().zip(deltas) {
                 b.target = clamp(b.position + d, 0.0, b.max_steps);
             }
+        }
+        if rpc && !auto(self, ModuleId::BoronControl) {
+            self.boration = match rpc_mode {
+                1 => {
+                    let err = self.power_ref - p_now;
+                    if err > 1.0 && sur < 0.3 {
+                        BorationMode::Dilute
+                    } else if err < -1.0 {
+                        BorationMode::Borate
+                    } else {
+                        BorationMode::Off
+                    }
+                }
+                2 => {
+                    // Coordinated: rods do the fast work; boron slowly brings the
+                    // lead bank back into its band once power is on target.
+                    let d = self.banks[5].position;
+                    let err = self.power_ref - p_now;
+                    match self.boration {
+                        BorationMode::Dilute if d > 200.0 && err > -0.5 && sur < 0.5 => {
+                            BorationMode::Dilute
+                        }
+                        BorationMode::Borate if d < 193.0 && err.abs() < 1.5 => {
+                            BorationMode::Borate
+                        }
+                        _ if d > 215.0 && err > 0.3 && sur < 0.3 => BorationMode::Dilute,
+                        _ if d < 170.0 && err.abs() < 1.0 && p_now > 0.5 => BorationMode::Borate,
+                        _ => BorationMode::Off,
+                    }
+                }
+                _ => self.boration,
+            };
         }
 
         if auto(self, ModuleId::BoronControl) {
@@ -1931,6 +2019,16 @@ impl Pwr {
         }
     }
 
+    /// Automatic generation control needs the unit load controller in AUTO and
+    /// the grid dispatch data link.
+    pub fn agc_available(&self) -> bool {
+        self.automation.mode(ModuleId::PlantMaster) == ModuleMode::Auto
+            && self
+                .automation
+                .upgrades
+                .contains(&UpgradeId::GridDispatchLink)
+    }
+
     /// Reactor shut down and generator off-line: heavy components may be
     /// replaced.
     pub fn in_outage(&self) -> bool {
@@ -2014,6 +2112,14 @@ impl Pwr {
                         ModuleId::Excitation,
                         "voltage_kv",
                         self.tg.grid_kv,
+                    );
+                }
+                ModuleId::ReactorPower => {
+                    self.power_ref = self.kinetics.n * 100.0;
+                    self.automation.setpoint_set(
+                        ModuleId::ReactorPower,
+                        "power_pct",
+                        (self.power_ref * 10.0).round() / 10.0,
                     );
                 }
                 ModuleId::PlantMaster => {
@@ -2110,6 +2216,9 @@ impl Pwr {
         }
         if self.banks.iter().any(|b| b.group2_offset.abs() > 12.0) {
             add(rx, "rod_dev", "ROD GROUP DEVIATION", A);
+        }
+        if mode(ModuleId::ReactorPower) == ModuleMode::Auto {
+            add(rx, "rpc_auto", "REACTOR POWER CONTROL IN AUTO", I);
         }
         if self.balancing.iter().any(|b| *b) {
             add(rx, "balancer", "ROD BALANCER ACTIVE", I);

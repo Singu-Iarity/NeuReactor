@@ -800,3 +800,143 @@ fn group_select_needs_the_pushbutton_grid_and_speed_selector_works() {
     );
     assert!(r.is_err());
 }
+
+fn pull_shutdown_banks(p: &mut Pwr) {
+    op(
+        p,
+        Command::SetRodSpeed {
+            steps_per_min: 72.0,
+        },
+    );
+    for bank in ["SA", "SB"] {
+        lever(p, bank, RodDirection::Out);
+        p.advance(200.0);
+        lever(p, bank, RodDirection::Hold);
+    }
+}
+
+/// Advance while doing what an operator must: block the SR at P-6.
+fn run_blocking_sr(p: &mut Pwr, secs: f64) {
+    let mut t = 0.0;
+    while t < secs {
+        p.advance(10.0);
+        t += 10.0;
+        let tel = p.telemetry(1.0, false);
+        if tel.nis.p6 && !tel.nis.sr_blocked {
+            op(
+                p,
+                Command::BlockNis {
+                    channel: NisBlock::SourceRange,
+                    blocked: true,
+                },
+            );
+        }
+        assert!(!p.reactor_tripped, "trip: {:?}", p.trips);
+    }
+}
+
+#[test]
+fn reactor_power_controller_takes_reactor_to_setpoint() {
+    let mut p = Pwr::hot_standby();
+    pull_shutdown_banks(&mut p);
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::RodControl,
+            mode: ModuleMode::Auto,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::ReactorPower,
+            mode: ModuleMode::Auto,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::ReactorPower,
+            key: "power_pct".into(),
+            value: 5.0,
+        },
+    );
+    run_blocking_sr(&mut p, 5400.0);
+    let pw = p.kinetics.n * 100.0;
+    assert!((3.5..6.5).contains(&pw), "power {pw}");
+    assert!(p
+        .telemetry(1.0, false)
+        .alarms
+        .iter()
+        .any(|a| a.tag == "rpc_auto"));
+}
+
+#[test]
+fn coordinated_mode_borates_to_bring_rods_up() {
+    let mut p = Pwr::hot_standby();
+    pull_shutdown_banks(&mut p);
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::RodControl,
+            mode: ModuleMode::Auto,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::ReactorPower,
+            mode: ModuleMode::Auto,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::ReactorPower,
+            key: "mode".into(),
+            value: 2.0,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::ReactorPower,
+            key: "power_pct".into(),
+            value: 3.0,
+        },
+    );
+    let b0 = p.boron_ppm;
+    run_blocking_sr(&mut p, 3.0 * 3600.0);
+    // At low power the control banks sit deep: boron is added so rod control
+    // withdraws them back into the D-bank band while power holds.
+    assert!(p.boron_ppm > b0 + 20.0, "boron {b0} -> {}", p.boron_ppm);
+    let d = p.banks[5].position;
+    assert!((140.0..=228.0).contains(&d), "D bank {d}");
+    assert!(
+        (2.0..4.5).contains(&(p.kinetics.n * 100.0)),
+        "power {}",
+        p.kinetics.n * 100.0
+    );
+}
+
+#[test]
+fn agc_needs_unit_load_controller_and_dispatch_link() {
+    let mut p = Pwr::full_power();
+    assert!(!p.agc_available());
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::PlantMaster,
+            mode: ModuleMode::Auto,
+        },
+    );
+    assert!(p.agc_available());
+    op(
+        &mut p,
+        Command::SetUpgradeInstalled {
+            upgrade: UpgradeId::GridDispatchLink,
+            installed: false,
+        },
+    );
+    assert!(!p.agc_available());
+}

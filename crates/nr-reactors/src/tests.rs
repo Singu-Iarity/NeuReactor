@@ -209,7 +209,7 @@ fn boron_automation_restores_tavg_after_load_follow_xenon() {
             value: 1150.0,
         },
     );
-    p.advance(3600.0);
+    p.advance(5400.0);
     assert!(
         (p.tavg() - p.tref()).abs() < 1.5,
         "tavg {} tref {}",

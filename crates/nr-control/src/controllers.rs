@@ -318,13 +318,16 @@ pub struct BoronControl {
 
 impl BoronControl {
     /// Returns -1 dilute, 0 off, +1 borate.
+    ///
+    /// Rods too deep mean the core has excess reactivity: borate, so rod
+    /// control withdraws them. Rods too high: dilute, so they drive in.
     pub fn update(&mut self, lead_bank: f64, low: f64, high: f64) -> i8 {
         let mid = 0.5 * (low + high);
         self.state = match self.state {
-            0 if lead_bank < low => -1,
-            0 if lead_bank > high => 1,
-            -1 if lead_bank >= mid => 0,
-            1 if lead_bank <= mid => 0,
+            0 if lead_bank < low => 1,
+            0 if lead_bank > high => -1,
+            1 if lead_bank >= mid => 0,
+            -1 if lead_bank <= mid => 0,
             s => s,
         };
         self.state
@@ -385,9 +388,9 @@ mod tests {
     #[test]
     fn boron_band_has_hysteresis() {
         let mut b = BoronControl::default();
-        assert_eq!(b.update(160.0, 170.0, 215.0), -1);
-        assert_eq!(b.update(180.0, 170.0, 215.0), -1);
+        assert_eq!(b.update(160.0, 170.0, 215.0), 1, "rods deep: borate");
+        assert_eq!(b.update(180.0, 170.0, 215.0), 1);
         assert_eq!(b.update(193.0, 170.0, 215.0), 0);
-        assert_eq!(b.update(220.0, 170.0, 215.0), 1);
+        assert_eq!(b.update(220.0, 170.0, 215.0), -1, "rods high: dilute");
     }
 }

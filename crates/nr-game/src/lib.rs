@@ -404,7 +404,7 @@ impl Career {
             .map(|m| {
                 let mut options: Vec<Quote> = Vec::new();
                 // Supervisory software (plant master, gateway) has no analog version.
-                if !m.actuators.is_empty() {
+                if !m.actuators.is_empty() || equipment::module_component(m.id).is_some() {
                     for era in equipment::analog_eras() {
                         for tier in Tier::ALL {
                             options.push(self.quote(Purchase::Controller {

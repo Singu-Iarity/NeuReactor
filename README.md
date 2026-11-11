@@ -29,6 +29,20 @@ cargo run --release -p nr-cli -- bench
 
 Scenarios: `steady`, `scram`, `load-follow`, `rcp-trip`, `xenon`.
 
+## Automatic plant control
+
+- **Reactor Power Controller** (Reactor tab), with rod control in AUTO:
+  - ROD: rods follow a power setpoint, startup-rate limited.
+  - BORON: dilute/borate with rods parked.
+  - COORD: rods for fast changes, boron returns the lead bank to its band.
+  - Analog cabinets support ROD only.
+- **Unit Load Controller** (plant master, Grid tab): drives the turbine load
+  target. With the **Grid Dispatch Link** installed, **AGC** follows grid
+  demand automatically.
+- **Automatic rod balancer:** part of rod control (OFF/S/M/F). It realigns
+  rod groups that slip apart and tilt the core's power. With the **Rod Group
+  Select** pushbutton grid you can also move single groups by hand.
+
 ## Sound
 
 Everything has sound, synthesised in the browser. Audio starts after your
