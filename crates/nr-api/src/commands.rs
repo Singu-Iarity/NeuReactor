@@ -183,6 +183,17 @@ pub enum Command {
         module: ModuleId,
         installed: bool,
     },
+    /// Fit a physical component variant (sandbox; career buys them).
+    SetComponent {
+        slot: crate::equipment::Slot,
+        era: crate::equipment::Era,
+        tier: crate::equipment::Tier,
+    },
+    /// Choose how an automation module is implemented (sandbox).
+    SetModuleController {
+        module: ModuleId,
+        controller: crate::equipment::Controller,
+    },
     /// Install / remove an I&C hardware upgrade (sandbox; career buys them).
     SetUpgradeInstalled {
         upgrade: UpgradeId,
@@ -239,6 +250,8 @@ impl Command {
             | C::SetTrainingMode { .. }
             | C::RepairGenerator
             | C::SetModuleInstalled { .. }
+            | C::SetComponent { .. }
+            | C::SetModuleController { .. }
             | C::SetUpgradeInstalled { .. }
             | C::SetControlRoom { .. }
             | C::LoadScenario { .. } => CommandKind::Scenario,

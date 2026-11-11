@@ -8,10 +8,11 @@
   <script>window.NR_TOKEN = "__OPERATOR_TOKEN__";</script>
   <script type="module" src="/js/main.js"></script>
 </head>
-<body data-room="analog">
+<body>
   <header class="topbar">
     <div class="brand">NeuReactor <span id="conn" class="conn"></span></div>
     <div id="unit" class="unit"></div>
+    <div id="career-top" class="career-top"></div>
     <div class="clock"><span class="clock-label">SIM TIME</span><span id="simtime" class="seg-val">0:00:00</span></div>
     <div class="timectl" id="timectl">
       <button data-scale="pause" title="Pause">❚❚</button>
@@ -20,6 +21,8 @@
       <button data-scale="20">20×</button>
       <button data-scale="60">60×</button>
       <button data-scale="300">300×</button>
+      <button data-scale="1000">1000×</button>
+      <button data-scale="5000">5000×</button>
     </div>
     <div class="master">
       <button class="pb-round red" id="master-ack" title="Master acknowledge">ACK</button>

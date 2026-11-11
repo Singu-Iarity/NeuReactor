@@ -11,6 +11,8 @@ pub struct AutomationState {
     pub owned: BTreeSet<ModuleId>,
     /// Installed I&C hardware upgrades.
     pub upgrades: BTreeSet<UpgradeId>,
+    /// Physical component variants, controller variants and conversion kits.
+    pub equipment: nr_api::Equipment,
     pub modes: BTreeMap<ModuleId, ModuleMode>,
     pub setpoints: BTreeMap<ModuleId, BTreeMap<String, f64>>,
 }
@@ -24,6 +26,7 @@ impl AutomationState {
             // individual items; career starts from the original plant.
             owned: modules::CATALOG.iter().map(|m| m.id).collect(),
             upgrades: nr_api::upgrades::CATALOG.iter().map(|u| u.id).collect(),
+            equipment: nr_api::Equipment::standard(),
             modes: BTreeMap::new(),
             setpoints: BTreeMap::new(),
         };

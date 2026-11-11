@@ -101,6 +101,8 @@ pub struct Telemetry {
     /// modernise (`"turbine.sync" -> digital`). Sections not listed are analog.
     pub sections: BTreeMap<String, ControlRoomGeneration>,
     pub upgrades: Vec<UpgradeView>,
+    pub equipment: crate::equipment::Equipment,
+    pub required_kits: Vec<crate::equipment::ConversionKit>,
     pub scenario: String,
     pub boration: BorationMode,
     pub reactor_tripped: bool,

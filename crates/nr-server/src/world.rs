@@ -27,6 +27,8 @@ pub struct LoggedEvent {
 
 pub struct World {
     pub plant: Pwr,
+    /// Active career, if any (sandbox otherwise).
+    pub career: Option<nr_game::Career>,
     pub time_scale: f64,
     pub paused: bool,
     pub operator_token: String,
@@ -55,6 +57,7 @@ impl World {
     pub fn new(scenario: &str) -> Self {
         Self {
             plant: Pwr::from_scenario(scenario).unwrap_or_else(Pwr::hot_standby),
+            career: None,
             time_scale: 1.0,
             paused: false,
             operator_token: random_token(),

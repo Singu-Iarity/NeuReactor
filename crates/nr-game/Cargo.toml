@@ -1,0 +1,10 @@
+[package]
+name = "nr-game"
+description = "NeuReactor career mode: calendar, budget, plant build phase, shop, research and notifications"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nr-api.workspace = true
+nr-reactors.workspace = true
+serde.workspace = true

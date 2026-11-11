@@ -432,3 +432,131 @@ fn removing_modules_and_hardware_in_sandbox() {
         .values()
         .all(|g| *g == ControlRoomGeneration::Analog));
 }
+
+#[test]
+fn component_quality_changes_output() {
+    use nr_api::equipment::{Era, Slot, Tier};
+    let run = |era, tier| {
+        let mut p = Pwr::full_power();
+        // Hold the turbine valve so output reflects efficiency, not the governor.
+        op(
+            &mut p,
+            Command::SetModuleMode {
+                module: ModuleId::TurbineGovernor,
+                mode: ModuleMode::Manual,
+            },
+        );
+        for slot in [Slot::Turbine, Slot::Generator, Slot::Condenser] {
+            op(&mut p, Command::SetComponent { slot, era, tier });
+        }
+        p.advance(300.0);
+        p.gross_mwe
+    };
+    let vintage = run(Era::Vintage, Tier::Basic);
+    let standard = run(Era::Dated, Tier::Quality);
+    let modern = run(Era::Modern, Tier::Premium);
+    assert!(
+        vintage < standard - 40.0 && modern > standard + 30.0,
+        "{vintage} {standard} {modern}"
+    );
+}
+
+#[test]
+fn analog_controllers_are_less_precise() {
+    use nr_api::equipment::{Controller, Era, Tier};
+    let spread = |c: Controller| {
+        let mut p = Pwr::full_power();
+        op(
+            &mut p,
+            Command::SetModuleController {
+                module: ModuleId::PressurizerPressure,
+                controller: c,
+            },
+        );
+        op(
+            &mut p,
+            Command::SetModuleMode {
+                module: ModuleId::PressurizerPressure,
+                mode: ModuleMode::Auto,
+            },
+        );
+        let mut worst: f64 = 0.0;
+        for _ in 0..120 {
+            p.advance(30.0);
+            worst = worst.max((p.pressure / 1e6 - 15.51).abs());
+        }
+        worst
+    };
+    let digital = spread(Controller::Digital);
+    let analog = spread(Controller::Analog {
+        era: Era::Vintage,
+        tier: Tier::Basic,
+    });
+    assert!(analog > 2.0 * digital, "analog {analog} digital {digital}");
+}
+
+#[test]
+fn analog_controller_runs_without_computer() {
+    use nr_api::equipment::{Controller, Era, Tier};
+    let mut p = Pwr::full_power();
+    op(
+        &mut p,
+        Command::SetControlRoom {
+            generation: ControlRoomGeneration::Analog,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetModuleInstalled {
+            module: ModuleId::RodControl,
+            installed: true,
+        },
+    );
+    let auto = Command::SetModuleMode {
+        module: ModuleId::RodControl,
+        mode: ModuleMode::Auto,
+    };
+    assert!(
+        p.command(&auto, &Origin::Operator).is_err(),
+        "digital needs the computer"
+    );
+    op(
+        &mut p,
+        Command::SetModuleController {
+            module: ModuleId::RodControl,
+            controller: Controller::Analog {
+                era: Era::Dated,
+                tier: Tier::Quality,
+            },
+        },
+    );
+    op(&mut p, auto);
+}
+
+#[test]
+fn era_mismatch_fits_conversion_kit_in_sandbox() {
+    use nr_api::equipment::{Era, Slot, Tier};
+    let mut p = Pwr::full_power();
+    op(
+        &mut p,
+        Command::SetComponent {
+            slot: Slot::Generator,
+            era: Era::Vintage,
+            tier: Tier::Basic,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetComponent {
+            slot: Slot::Turbine,
+            era: Era::Modern,
+            tier: Tier::Quality,
+        },
+    );
+    let t = p.telemetry(1.0, false);
+    assert!(t
+        .required_kits
+        .iter()
+        .any(|k| k.key == "couple:Turbine:Generator"));
+    assert!(p.automation.equipment.missing_kits().is_empty());
+}

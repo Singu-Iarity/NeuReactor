@@ -68,6 +68,15 @@ name = "nr-core"
 version = "0.1.0"
 
 [[package]]
+name = "nr-game"
+version = "0.1.0"
+dependencies = [
+ "nr-api",
+ "nr-reactors",
+ "serde",
+]
+
+[[package]]
 name = "nr-physics"
 version = "0.1.0"
 dependencies = [
@@ -91,6 +100,7 @@ name = "nr-server"
 version = "0.1.0"
 dependencies = [
  "nr-api",
+ "nr-game",
  "nr-reactors",
  "serde",
  "serde_json",

@@ -10,6 +10,7 @@
 //! * [`policy`]: who may issue which command in which game mode.
 
 pub mod commands;
+pub mod equipment;
 pub mod modules;
 pub mod policy;
 pub mod telemetry;
@@ -18,6 +19,7 @@ pub mod upgrades;
 pub use commands::{
     Actuator, BorationMode, Command, CommandKind, ControlRoomGeneration, NisBlock, RodDirection,
 };
+pub use equipment::{Component, Controller, Equipment, Era, Slot, Tier, Unlock};
 pub use modules::{ModuleId, ModuleInfo, ModuleMode, CATALOG};
 pub use policy::{authorize, can_read, Denied, GameMode, Origin, PolicyContext, Scope};
 pub use telemetry::{Alarm, ModuleView, NisView, RodView, Severity, Telemetry, UpgradeView};

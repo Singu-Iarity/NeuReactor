@@ -10,8 +10,9 @@ import * as steam from "./panels/steam.js";
 import * as turbine from "./panels/turbine.js";
 import * as automation from "./panels/equipment.js";
 import * as computer from "./panels/computer.js";
+import * as career from "./panels/career.js";
 
-const PANELS = [reactor, rcs, cvcs, steam, turbine, automation, computer];
+const PANELS = [reactor, rcs, cvcs, steam, turbine, automation, computer, career];
 const $ = s => document.querySelector(s);
 
 let telemetry = null;
@@ -86,6 +87,7 @@ for (const P of PANELS) {
   tabs.append(tab);
   const body = h("div", { class: "panel-body" });
   const head = h("div", { class: "panel-head", "data-section": `${P.id}.alarms` });
+  if (!P.windows.length) head.style.display = "none";
   if (P.windows.length) {
     const a = annunciatorPanel(`${P.title.toUpperCase()} INDICATOR PANEL`, P.windows);
     a.cells.forEach((cell, tag) => annCells.set(tag, cell));

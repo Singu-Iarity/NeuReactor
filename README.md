@@ -43,6 +43,34 @@ analog reactor panels. In sandbox, toggle each item freely, or use the
 Plant Computer tab presets ORIGINAL PLANT / FULLY MODERNISED. The sandbox
 starts fully modernised.
 
+## Career mode
+
+Open the **Career** tab and choose a start year and difficulty.
+
+1. **Construction.** You get a budget scaled to the era. Equip all nine plant
+   components:
+   - turbine, generator, condenser, feed pumps, reactor coolant pumps, steam
+     generators, rod drives, pressurizer, board instruments
+   - each in an **era** (vintage / dated / modern) and a **tier** (basic /
+   quality / premium). Better parts mean more MWe, more flow, faster rods,
+   less instrument noise.
+   - choose each automation module as an **analog cabinet** (no computer,
+   less precise) or **digital software** (needs its computer + panel
+   package), and buy computers and panel packages.
+   - equipment two eras apart from what it connects to (e.g. a modern
+   turbine on a vintage generator, or a modern digital feedwater controller
+   on vintage feed pumps) needs a **conversion kit**, priced into the
+   purchase automatically.
+2. **Commission** the unit. It starts at hot standby with every module in
+   MANUAL. Power sold earns $/MWh; O&M costs money every day.
+3. **Calendar & research.** As the in-game years pass, new technology
+   arrives ("due to new research, you can now install …"). Pay for research
+   projects to unlock it early. Major components can only be swapped during
+   an outage; controllers and I&C hardware anytime.
+
+Use the 1000× / 5000× time buttons to let research and calendar time pass.
+There is no save game yet; a career lasts as long as the server runs.
+
 ## Playing: a reactor startup
 
 The server starts the plant at **hot standby**: no-load temperature and

@@ -41,6 +41,15 @@ every module that depends on it to MANUAL. Telemetry reports
 `sections: {"turbine.sync": "digital", ...}`, and the UI themes each
 `data-section` independently.
 
+## Career layer (`nr-game`)
+
+`Career` owns the calendar, money, research and the purchased configuration
+(`nr_api::equipment::Equipment`: component era/tier per slot, controller
+variant per module, fitted conversion kits; plus installed modules and I&C
+hardware). Purchases are quoted (price + newly required kits − refund) and
+pushed into the plant with `Pwr::install`, which drops any automation that
+can no longer run to MANUAL. The server ticks the career with plant time.
+
 ## Data flow
 
 ```

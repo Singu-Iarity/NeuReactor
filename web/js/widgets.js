@@ -458,13 +458,14 @@ export function maStation(title, cfg, ctx) {
       mBtn.classList.toggle("lit", mode === "manual");
       aBtn.classList.toggle("lit", mode === "auto");
       el.classList.toggle("ext", mode === "external");
-      const missing = (m?.requires_upgrades ?? []).filter(u => !t.upgrades.find(x => x.id === u)?.installed);
+      const analogCtl = t.equipment?.controllers[cfg.module]?.kind === "analog";
+      const missing = analogCtl ? [] : (m?.requires_upgrades ?? []).filter(u => !t.upgrades.find(x => x.id === u)?.installed);
       const unavailable = (m && !m.owned) || missing.length > 0;
       el.classList.toggle("not-owned", unavailable);
       aBtn.disabled = unavailable;
       status.textContent = mode === "external" ? "EXTERNAL (plugin)"
         : m && !m.owned ? "MODULE NOT INSTALLED"
-        : missing.length ? "NO COMPUTER LINK" : "";
+        : missing.length ? "NO COMPUTER LINK" : analogCtl ? "ANALOG CONTROLLER" : "";
       status.title = missing.map(u => t.upgrades.find(x => x.id === u)?.name).join(", ");
     },
   };

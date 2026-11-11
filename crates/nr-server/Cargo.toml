@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 nr-api.workspace = true
 nr-reactors.workspace = true
+nr-game = { path = "../nr-game" }
 serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true

@@ -243,7 +243,7 @@ fn api_authed(
             let result = w.plant.command(&cmd, &origin);
             if result.is_ok() {
                 match &cmd {
-                    Command::SetTimeScale { factor } => w.time_scale = factor.clamp(0.1, 1000.0),
+                    Command::SetTimeScale { factor } => w.time_scale = factor.clamp(0.1, 10_000.0),
                     Command::SetPaused { paused } => w.paused = *paused,
                     _ => {}
                 }
@@ -253,6 +253,24 @@ fn api_authed(
             match result {
                 Ok(()) => json_resp(req, 200, json!({ "ok": true })),
                 Err(e) => error(req, 403, &e.0),
+            }
+        }
+        (Method::Get, "/api/v1/career") if is_operator => {
+            let v = match &w.career {
+                Some(c) => json!({ "active": true, "career": c.view() }),
+                None => json!({ "active": false }),
+            };
+            drop(w);
+            json_resp(req, 200, v)
+        }
+        (Method::Post, p) if is_operator && p.starts_with("/api/v1/career/") => {
+            let action = &p["/api/v1/career/".len()..];
+            let result = career_action(&mut w, action, body);
+            w.collect_events();
+            drop(w);
+            match result {
+                Ok(()) => json_resp(req, 200, json!({ "ok": true })),
+                Err(e) => error(req, 400, &e),
             }
         }
         (Method::Get, "/api/v1/plugins") if is_operator => {
@@ -291,5 +309,55 @@ fn api_authed(
             drop(w);
             error(req, 404, "not found")
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct NewCareer {
+    start_year: i32,
+    difficulty: nr_game::Difficulty,
+}
+
+fn career_action(w: &mut World, action: &str, body: &str) -> Result<(), String> {
+    let parse = |e: serde_json::Error| format!("bad request: {e}");
+    match action {
+        "new" => {
+            let n: NewCareer = serde_json::from_str(body).map_err(parse)?;
+            if !(1965..=2030).contains(&n.start_year) {
+                return Err("start year must be 1965-2030".into());
+            }
+            w.career = Some(nr_game::Career::new(n.start_year, n.difficulty));
+            // The site is under construction: hold the simulation.
+            w.plant = nr_reactors::Pwr::hot_standby();
+            w.plant.automation.game_mode = nr_api::GameMode::Career;
+            w.paused = true;
+            Ok(())
+        }
+        "quit" => {
+            w.career = None;
+            w.plant = nr_reactors::Pwr::hot_standby();
+            w.paused = false;
+            Ok(())
+        }
+        "buy" => {
+            let p: nr_game::Purchase = serde_json::from_str(body).map_err(parse)?;
+            let World { plant, career, .. } = w;
+            career.as_mut().ok_or("no career active")?.buy(p, plant)
+        }
+        "research" => {
+            let u: nr_api::Unlock = serde_json::from_str(body).map_err(parse)?;
+            w.career
+                .as_mut()
+                .ok_or("no career active")?
+                .start_research(u)
+        }
+        "commission" => {
+            let plant = w.career.as_mut().ok_or("no career active")?.commission()?;
+            w.plant = plant;
+            w.paused = false;
+            w.time_scale = 1.0;
+            Ok(())
+        }
+        _ => Err("unknown career action".into()),
     }
 }

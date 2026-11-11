@@ -55,6 +55,9 @@ pub struct PolicyContext {
     pub owned: BTreeSet<ModuleId>,
     /// I&C hardware upgrades installed on this unit.
     pub upgrades: BTreeSet<UpgradeId>,
+    /// Modules implemented as stand-alone analog controllers (these need no
+    /// computer or panel package).
+    pub analog: BTreeSet<ModuleId>,
     pub module_modes: BTreeMap<ModuleId, ModuleMode>,
 }
 
@@ -65,6 +68,7 @@ impl PolicyContext {
             mode: GameMode::Sandbox,
             owned: modules::CATALOG.iter().map(|m| m.id).collect(),
             upgrades: upgrades::CATALOG.iter().map(|u| u.id).collect(),
+            analog: BTreeSet::new(),
             module_modes: BTreeMap::new(),
         }
     }
@@ -123,7 +127,7 @@ pub fn authorize(cmd: &Command, origin: &Origin, ctx: &PolicyContext) -> Result<
             if mode != ModuleMode::Manual && !modules::info(m).implemented {
                 return deny(format!("module {m:?} is not available yet"));
             }
-            if mode != ModuleMode::Manual {
+            if mode != ModuleMode::Manual && !ctx.analog.contains(&m) {
                 for u in modules::info(m).requires_upgrades {
                     if !ctx.has_upgrade(*u) {
                         return deny(format!("{m:?} requires {}", upgrades::info(*u).name));
@@ -223,6 +227,7 @@ mod tests {
             mode: GameMode::Career,
             owned: owned.iter().copied().collect(),
             upgrades: upgrades::CATALOG.iter().map(|u| u.id).collect(),
+            analog: BTreeSet::new(),
             module_modes: modes.iter().copied().collect(),
         }
     }

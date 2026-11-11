@@ -1,0 +1,681 @@
+//! NeuReactor career mode.
+//!
+//! A career starts in a chosen year with a construction budget. In the
+//! **build phase** the player equips the plant: every physical component in
+//! an era/quality tier, every automation module as an analog cabinet or
+//! digital software, plus computers and panel packages. Equipment that is two
+//! eras apart from what it connects to needs a conversion kit, which is added
+//! to the purchase automatically. After commissioning, the **operating
+//! phase** runs a calendar: power sold earns money, O&M costs money, new
+//! technology appears as the years pass, and research can unlock it early.
+
+use nr_api::equipment::{
+    self, Component, Controller, ConversionKit, Equipment, Era, Slot, Tier, Unlock,
+};
+use nr_api::{modules, upgrades, GameMode, ModuleId, ModuleMode, UpgradeId};
+use nr_reactors::Pwr;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub const DAY: f64 = 86_400.0;
+const DAYS_PER_YEAR: f64 = 365.0;
+const MONTHS: [(&str, u32); 12] = [
+    ("Jan", 31),
+    ("Feb", 28),
+    ("Mar", 31),
+    ("Apr", 30),
+    ("May", 31),
+    ("Jun", 30),
+    ("Jul", 31),
+    ("Aug", 31),
+    ("Sep", 30),
+    ("Oct", 31),
+    ("Nov", 30),
+    ("Dec", 31),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Difficulty {
+    Easy,
+    Normal,
+    Hard,
+}
+
+impl Difficulty {
+    /// Construction budget for a career starting in `year`: a multiple of
+    /// what a full set of quality components of that era costs.
+    pub fn budget(self, year: i32) -> f64 {
+        let era = Era::of_year(year);
+        let standard: f64 = equipment::SLOTS
+            .iter()
+            .map(|s| {
+                Component {
+                    era,
+                    tier: Tier::Quality,
+                }
+                .price(s.slot)
+            })
+            .sum();
+        let factor = match self {
+            Difficulty::Easy => 1.4,
+            Difficulty::Normal => 1.12,
+            Difficulty::Hard => 0.95,
+        };
+        (standard * factor / 1e6).round() * 1e6
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Build,
+    Operating,
+}
+
+/// Something the player can buy.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Purchase {
+    Component {
+        slot: Slot,
+        era: Era,
+        tier: Tier,
+    },
+    Controller {
+        module: ModuleId,
+        controller: Controller,
+    },
+    Upgrade {
+        upgrade: UpgradeId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchProject {
+    pub unlock: Unlock,
+    pub name: String,
+    pub cost: f64,
+    pub days: f64,
+    pub progress_days: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Notification {
+    pub date: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Career {
+    pub start_year: i32,
+    pub difficulty: Difficulty,
+    pub phase: Phase,
+    pub money: f64,
+    /// Days of operation since 1 January of the start year.
+    pub elapsed_days: f64,
+    pub price_mwh: f64,
+    pub om_per_day: f64,
+    pub revenue_total: f64,
+    pub costs_total: f64,
+    pub equipment: Equipment,
+    pub modules: BTreeSet<ModuleId>,
+    pub upgrades: BTreeSet<UpgradeId>,
+    pub researched: BTreeSet<Unlock>,
+    pub research: Vec<ResearchProject>,
+    announced: BTreeSet<Unlock>,
+    pub notifications: Vec<Notification>,
+}
+
+/// Purchase quote shown in the shop.
+#[derive(Debug, Clone, Serialize)]
+pub struct Quote {
+    pub purchase: Purchase,
+    pub label: String,
+    pub price: f64,
+    pub kits: Vec<ConversionKit>,
+    pub refund: f64,
+    pub total: f64,
+    pub available: bool,
+    pub year: i32,
+    pub owned: bool,
+    pub perf: Option<f64>,
+}
+
+impl Career {
+    pub fn new(start_year: i32, difficulty: Difficulty) -> Self {
+        let mut c = Self {
+            start_year,
+            difficulty,
+            phase: Phase::Build,
+            money: difficulty.budget(start_year),
+            elapsed_days: 0.0,
+            price_mwh: 45.0,
+            om_per_day: 120_000.0,
+            revenue_total: 0.0,
+            costs_total: 0.0,
+            equipment: Equipment {
+                components: BTreeMap::new(),
+                controllers: BTreeMap::new(),
+                kits: BTreeSet::new(),
+            },
+            modules: BTreeSet::new(),
+            upgrades: BTreeSet::new(),
+            researched: BTreeSet::new(),
+            research: Vec::new(),
+            announced: BTreeSet::new(),
+            notifications: Vec::new(),
+        };
+        // Everything already available at the start is not news.
+        for u in Unlock::all() {
+            if c.available(u) {
+                c.announced.insert(u);
+            }
+        }
+        c.notify(format!(
+            "Construction budget ${:.0}M. Equip every plant component, choose your automation, then commission the unit.",
+            c.money / 1e6
+        ));
+        c
+    }
+
+    // ------------------------------------------------------------ calendar
+
+    pub fn year_fraction(&self) -> f64 {
+        self.start_year as f64 + self.elapsed_days / DAYS_PER_YEAR
+    }
+
+    pub fn year(&self) -> i32 {
+        self.year_fraction().floor() as i32
+    }
+
+    pub fn date(&self) -> String {
+        let mut day = (self.elapsed_days % DAYS_PER_YEAR).floor() as u32;
+        for (name, len) in MONTHS {
+            if day < len {
+                return format!("{} {name} {}", day + 1, self.year());
+            }
+            day -= len;
+        }
+        format!("31 Dec {}", self.year())
+    }
+
+    fn notify(&mut self, text: String) {
+        let date = self.date();
+        self.notifications.push(Notification { date, text });
+        if self.notifications.len() > 200 {
+            self.notifications.remove(0);
+        }
+    }
+
+    pub fn available(&self, u: Unlock) -> bool {
+        self.year() >= u.year() || self.researched.contains(&u)
+    }
+
+    fn unlock_for(p: Purchase) -> Unlock {
+        match p {
+            Purchase::Component { slot, era, .. } => Unlock::Component { slot, era },
+            Purchase::Controller {
+                controller: Controller::Analog { era, .. },
+                ..
+            } => Unlock::AnalogControllers { era },
+            Purchase::Controller {
+                controller: Controller::Digital,
+                ..
+            } => Unlock::DigitalControllers,
+            Purchase::Upgrade { upgrade } => Unlock::Upgrade { upgrade },
+        }
+    }
+
+    // ---------------------------------------------------------------- shop
+
+    /// Price, conversion kits and refund for a purchase.
+    pub fn quote(&self, p: Purchase) -> Quote {
+        let mut after = self.equipment.clone();
+        let (price, refund, owned, label, perf) = match p {
+            Purchase::Component { slot, era, tier } => {
+                let c = Component { era, tier };
+                let old = after.components.insert(slot, c);
+                let refund = old
+                    .map(|o| o.price(slot) * self.refund_rate())
+                    .unwrap_or(0.0);
+                (
+                    c.price(slot),
+                    refund,
+                    old == Some(c),
+                    c.label(),
+                    Some(c.perf()),
+                )
+            }
+            Purchase::Controller { module, controller } => {
+                let old = if self.modules.contains(&module) {
+                    after.controllers.get(&module).copied()
+                } else {
+                    None
+                };
+                after.controllers.insert(module, controller);
+                let refund = old
+                    .map(|o| o.price(module) * self.refund_rate())
+                    .unwrap_or(0.0);
+                (
+                    controller.price(module),
+                    refund,
+                    old == Some(controller),
+                    controller.label(),
+                    None,
+                )
+            }
+            Purchase::Upgrade { upgrade } => {
+                let owned = self.upgrades.contains(&upgrade);
+                (
+                    upgrades::info(upgrade).price as f64,
+                    0.0,
+                    owned,
+                    upgrades::info(upgrade).name.to_string(),
+                    None,
+                )
+            }
+        };
+        let kits: Vec<ConversionKit> = after
+            .required_kits()
+            .into_iter()
+            .filter(|k| !self.equipment.kits.contains(&k.key))
+            .collect();
+        let kit_cost: f64 = kits.iter().map(|k| k.price).sum();
+        let u = Self::unlock_for(p);
+        Quote {
+            purchase: p,
+            label,
+            price,
+            total: if owned {
+                0.0
+            } else {
+                price + kit_cost - refund
+            },
+            kits,
+            refund,
+            available: self.available(u),
+            year: u.year(),
+            owned,
+            perf,
+        }
+    }
+
+    fn refund_rate(&self) -> f64 {
+        match self.phase {
+            Phase::Build => 1.0,
+            Phase::Operating => 0.2,
+        }
+    }
+
+    pub fn buy(&mut self, p: Purchase, plant: &mut Pwr) -> Result<(), String> {
+        let q = self.quote(p);
+        if q.owned {
+            return Err("already installed".into());
+        }
+        if !q.available {
+            return Err(format!("not available until {} (or research it)", q.year));
+        }
+        if let Purchase::Component { .. } = p {
+            if self.phase == Phase::Operating && !plant.in_outage() {
+                return Err("major components can only be replaced during an outage (reactor shut down, generator off-line)".into());
+            }
+        }
+        if q.total > self.money {
+            return Err(format!("insufficient funds: need ${:.1}M", q.total / 1e6));
+        }
+        self.money -= q.total;
+        self.costs_total += q.total.max(0.0);
+        for k in &q.kits {
+            self.equipment.kits.insert(k.key.clone());
+        }
+        match p {
+            Purchase::Component { slot, era, tier } => {
+                self.equipment
+                    .components
+                    .insert(slot, Component { era, tier });
+            }
+            Purchase::Controller { module, controller } => {
+                self.equipment.controllers.insert(module, controller);
+                self.modules.insert(module);
+            }
+            Purchase::Upgrade { upgrade } => {
+                self.upgrades.insert(upgrade);
+            }
+        }
+        let kit_note = if q.kits.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (+ {})",
+                q.kits
+                    .iter()
+                    .map(|k| k.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        self.notify(format!(
+            "Purchased {}: ${:.1}M{kit_note}",
+            purchase_name(p),
+            q.total / 1e6
+        ));
+        if self.phase == Phase::Operating {
+            self.push_to_plant(plant);
+        }
+        Ok(())
+    }
+
+    /// Everything the player can buy right now, with quotes.
+    pub fn shop(&self) -> Shop {
+        let components = equipment::SLOTS
+            .iter()
+            .map(|s| ShopSlot {
+                slot: s.slot,
+                name: s.name.into(),
+                effect: s.effect.into(),
+                installed: self.equipment.components.get(&s.slot).copied(),
+                options: Era::ALL
+                    .iter()
+                    .flat_map(|era| Tier::ALL.iter().map(move |tier| (*era, *tier)))
+                    .map(|(era, tier)| {
+                        self.quote(Purchase::Component {
+                            slot: s.slot,
+                            era,
+                            tier,
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+        let controllers = modules::CATALOG
+            .iter()
+            .filter(|m| m.implemented)
+            .map(|m| {
+                let mut options: Vec<Quote> = Vec::new();
+                // Supervisory software (plant master, gateway) has no analog version.
+                if !m.actuators.is_empty() {
+                    for era in equipment::analog_eras() {
+                        for tier in Tier::ALL {
+                            options.push(self.quote(Purchase::Controller {
+                                module: m.id,
+                                controller: Controller::Analog { era, tier },
+                            }));
+                        }
+                    }
+                }
+                options.push(self.quote(Purchase::Controller {
+                    module: m.id,
+                    controller: Controller::Digital,
+                }));
+                ShopModule {
+                    module: m.id,
+                    name: m.name.into(),
+                    panel: m.panel.into(),
+                    installed: if self.modules.contains(&m.id) {
+                        self.equipment.controllers.get(&m.id).copied()
+                    } else {
+                        None
+                    },
+                    requires: m.requires_upgrades.to_vec(),
+                    options,
+                }
+            })
+            .collect();
+        let hardware = upgrades::CATALOG
+            .iter()
+            .map(|u| self.quote(Purchase::Upgrade { upgrade: u.id }))
+            .collect();
+        Shop {
+            components,
+            controllers,
+            hardware,
+        }
+    }
+
+    pub fn missing_components(&self) -> Vec<Slot> {
+        equipment::SLOTS
+            .iter()
+            .map(|s| s.slot)
+            .filter(|s| !self.equipment.components.contains_key(s))
+            .collect()
+    }
+
+    // ------------------------------------------------------------ research
+
+    pub fn research_options(&self) -> Vec<ResearchOption> {
+        Unlock::all()
+            .into_iter()
+            .filter(|u| !self.available(*u) && !self.research.iter().any(|r| r.unlock == *u))
+            .map(|u| {
+                let (cost, days) = self.research_terms(u);
+                let prereq_ok = u.prerequisite().map(|p| self.available(p)).unwrap_or(true);
+                ResearchOption {
+                    unlock: u,
+                    name: u.name(),
+                    year: u.year(),
+                    cost,
+                    days,
+                    prerequisite: u.prerequisite().filter(|_| !prereq_ok).map(|p| p.name()),
+                }
+            })
+            .collect()
+    }
+
+    fn research_terms(&self, u: Unlock) -> (f64, f64) {
+        let early = (u.year() as f64 - self.year_fraction()).max(0.0);
+        let cost = u.reference_price() * 0.35 * (1.0 + 0.2 * early);
+        let days = (45.0 + 30.0 * early).min(900.0);
+        (cost, days)
+    }
+
+    pub fn start_research(&mut self, u: Unlock) -> Result<(), String> {
+        if self.available(u) {
+            return Err("already available".into());
+        }
+        if self.research.iter().any(|r| r.unlock == u) {
+            return Err("already being researched".into());
+        }
+        if let Some(p) = u.prerequisite() {
+            if !self.available(p) {
+                return Err(format!("requires {} first", p.name()));
+            }
+        }
+        let (cost, days) = self.research_terms(u);
+        if cost > self.money {
+            return Err(format!("insufficient funds: need ${:.1}M", cost / 1e6));
+        }
+        self.money -= cost;
+        self.costs_total += cost;
+        self.research.push(ResearchProject {
+            unlock: u,
+            name: u.name(),
+            cost,
+            days,
+            progress_days: 0.0,
+        });
+        self.notify(format!(
+            "Research started: {} ({days:.0} days, ${:.1}M)",
+            u.name(),
+            cost / 1e6
+        ));
+        Ok(())
+    }
+
+    // ----------------------------------------------------------- lifecycle
+
+    /// Finish the build phase. Returns the plant to operate.
+    pub fn commission(&mut self) -> Result<Pwr, String> {
+        if self.phase != Phase::Build {
+            return Err("already commissioned".into());
+        }
+        let missing = self.missing_components();
+        if !missing.is_empty() {
+            let names: Vec<&str> = missing
+                .iter()
+                .map(|s| equipment::slot_info(*s).name)
+                .collect();
+            return Err(format!("still to equip: {}", names.join(", ")));
+        }
+        self.phase = Phase::Operating;
+        let mut plant = Pwr::hot_standby();
+        plant.automation.game_mode = GameMode::Career;
+        for m in modules::CATALOG {
+            plant.automation.modes.insert(m.id, ModuleMode::Manual);
+        }
+        self.push_to_plant(&mut plant);
+        self.notify(format!(
+            "Unit commissioned with ${:.0}M remaining. The reactor is at hot standby: take it critical and sell power at ${:.0}/MWh.",
+            self.money / 1e6,
+            self.price_mwh
+        ));
+        Ok(plant)
+    }
+
+    fn push_to_plant(&self, plant: &mut Pwr) {
+        let mut e = self.equipment.clone();
+        // Controllers of modules not owned are irrelevant to the plant.
+        e.controllers.retain(|m, _| self.modules.contains(m));
+        for m in modules::CATALOG {
+            e.controllers.entry(m.id).or_insert(Controller::Digital);
+        }
+        plant.install(self.modules.clone(), self.upgrades.clone(), e);
+    }
+
+    /// Advance the career by `dt` seconds of plant time.
+    pub fn tick(&mut self, dt: f64, plant: &Pwr) {
+        if self.phase != Phase::Operating || dt <= 0.0 {
+            return;
+        }
+        let days = dt / DAY;
+        let year_before = self.year();
+        self.elapsed_days += days;
+        let net_mw = plant.gross_mwe - plant.p.house_load_mwe;
+        if plant.tg.breaker && net_mw > 0.0 {
+            let revenue = net_mw * dt / 3600.0 * self.price_mwh;
+            self.money += revenue;
+            self.revenue_total += revenue;
+        }
+        let om = self.om_per_day * days;
+        self.money -= om;
+        self.costs_total += om;
+
+        let mut finished = Vec::new();
+        for r in &mut self.research {
+            r.progress_days += days;
+            if r.progress_days >= r.days {
+                finished.push(r.unlock);
+            }
+        }
+        self.research.retain(|r| r.progress_days < r.days);
+        for u in finished {
+            self.researched.insert(u);
+            self.announced.insert(u);
+            self.notify(format!(
+                "Research complete: you can now install {}.",
+                u.name()
+            ));
+        }
+        if self.year() != year_before {
+            for u in Unlock::all() {
+                if !self.announced.contains(&u) && self.available(u) {
+                    self.announced.insert(u);
+                    self.notify(format!(
+                        "Due to new research, you can now install {}.",
+                        u.name()
+                    ));
+                }
+            }
+        }
+    }
+
+    pub fn view(&self) -> CareerView {
+        CareerView {
+            phase: self.phase,
+            start_year: self.start_year,
+            difficulty: self.difficulty,
+            date: self.date(),
+            year: self.year(),
+            money: self.money,
+            price_mwh: self.price_mwh,
+            om_per_day: self.om_per_day,
+            revenue_total: self.revenue_total,
+            costs_total: self.costs_total,
+            missing_components: self.missing_components(),
+            notifications: self.notifications.iter().rev().take(60).cloned().collect(),
+            research: self.research.clone(),
+            research_options: self.research_options(),
+            shop: self.shop(),
+        }
+    }
+}
+
+fn purchase_name(p: Purchase) -> String {
+    match p {
+        Purchase::Component { slot, era, tier } => {
+            format!("{era:?} {tier:?} {}", equipment::slot_info(slot).name)
+        }
+        Purchase::Controller { module, controller } => {
+            format!("{} ({})", modules::info(module).name, controller.label())
+        }
+        Purchase::Upgrade { upgrade } => upgrades::info(upgrade).name.into(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShopSlot {
+    pub slot: Slot,
+    pub name: String,
+    pub effect: String,
+    pub installed: Option<Component>,
+    pub options: Vec<Quote>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShopModule {
+    pub module: ModuleId,
+    pub name: String,
+    pub panel: String,
+    pub installed: Option<Controller>,
+    pub requires: Vec<UpgradeId>,
+    pub options: Vec<Quote>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Shop {
+    pub components: Vec<ShopSlot>,
+    pub controllers: Vec<ShopModule>,
+    pub hardware: Vec<Quote>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResearchOption {
+    pub unlock: Unlock,
+    pub name: String,
+    pub year: i32,
+    pub cost: f64,
+    pub days: f64,
+    pub prerequisite: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CareerView {
+    pub phase: Phase,
+    pub start_year: i32,
+    pub difficulty: Difficulty,
+    pub date: String,
+    pub year: i32,
+    pub money: f64,
+    pub price_mwh: f64,
+    pub om_per_day: f64,
+    pub revenue_total: f64,
+    pub costs_total: f64,
+    pub missing_components: Vec<Slot>,
+    pub notifications: Vec<Notification>,
+    pub research: Vec<ResearchProject>,
+    pub research_options: Vec<ResearchOption>,
+    pub shop: Shop,
+}
+
+#[cfg(test)]
+mod tests;

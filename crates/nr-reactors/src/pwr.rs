@@ -15,6 +15,7 @@
 //! * turbine-generator shaft dynamics and grid synchronisation.
 
 use crate::plant::{AutomationState, PlantEvent};
+use nr_api::equipment::{Controller, Equipment, Slot};
 use nr_api::{
     authorize, modules, Actuator, Alarm, BorationMode, Command, CommandKind, ControlRoomGeneration,
     Denied, GameMode, ModuleId, ModuleMode, ModuleView, NisBlock, NisView, Origin, PolicyContext,
@@ -141,6 +142,70 @@ const P10_PCT: f64 = 10.0;
 /// Physics step [s].
 pub const DT: f64 = 0.05;
 
+/// Instrument tags: (tag, lag [s], noise sd, range).
+const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
+    ("sr_cps", 1.0, 0.0, (0.0, 1.0e6)),
+    ("sr_sur_dpm", 1.0, 0.02, (-1.0, 5.0)),
+    ("ir_amps", 0.3, 0.0, (1.0e-11, 1.0e-3)),
+    ("ir_sur_dpm", 1.0, 0.02, (-1.0, 5.0)),
+    ("pr_n41_pct", 0.2, 0.15, (0.0, 120.0)),
+    ("pr_n42_pct", 0.2, 0.15, (0.0, 120.0)),
+    ("pr_n43_pct", 0.2, 0.15, (0.0, 120.0)),
+    ("pr_n44_pct", 0.2, 0.15, (0.0, 120.0)),
+    ("nuclear_power_pct", 0.2, 0.1, (0.0, 120.0)),
+    ("thermal_power_mw", 5.0, 3.0, (0.0, 4500.0)),
+    ("startup_rate_dpm", 1.0, 0.02, (-1.0, 5.0)),
+    ("tavg_c", 2.0, 0.05, (0.0, 400.0)),
+    ("tref_c", 0.0, 0.0, (0.0, 400.0)),
+    ("thot_c", 2.0, 0.05, (0.0, 400.0)),
+    ("tcold_c", 2.0, 0.05, (0.0, 400.0)),
+    ("delta_t_pct", 2.0, 0.2, (0.0, 150.0)),
+    ("rcs_pressure_mpa", 0.3, 0.005, (0.0, 20.0)),
+    ("pzr_level_pct", 1.0, 0.2, (0.0, 100.0)),
+    ("pzr_level_program_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("rcs_flow_pct", 0.5, 0.3, (0.0, 120.0)),
+    ("boron_ppm", 60.0, 1.0, (0.0, 3000.0)),
+    ("pzr_heaters_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("pzr_spray_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("charging_kg_s", 1.0, 0.05, (0.0, 30.0)),
+    ("letdown_kg_s", 1.0, 0.05, (0.0, 30.0)),
+    ("sg_pressure_mpa", 0.3, 0.005, (0.0, 10.0)),
+    ("sg_level_pct", 1.0, 0.3, (0.0, 100.0)),
+    ("steam_flow_kg_s", 1.0, 2.0, (0.0, 2500.0)),
+    ("feed_flow_kg_s", 1.0, 2.0, (0.0, 2500.0)),
+    ("feed_demand_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("feed_temp_c", 5.0, 0.2, (0.0, 300.0)),
+    ("turbine_valve_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("steam_dump_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("gross_mwe", 0.5, 1.0, (0.0, 1400.0)),
+    ("net_mwe", 0.5, 1.0, (-100.0, 1400.0)),
+    ("reactivity_pcm", 1.0, 0.5, (-20000.0, 1000.0)),
+    ("turbine_speed_rpm", 0.2, 0.2, (0.0, 2200.0)),
+    ("gen_freq_hz", 0.1, 0.002, (0.0, 70.0)),
+    ("grid_freq_hz", 0.1, 0.002, (55.0, 65.0)),
+    ("sync_phase_deg", 0.0, 0.0, (-180.0, 180.0)),
+    ("sync_slip_hz", 0.1, 0.001, (-70.0, 70.0)),
+    ("gen_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
+    ("grid_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
+    ("excitation_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("generator_health_pct", 0.0, 0.0, (0.0, 100.0)),
+];
+
+/// Engineering units of one unit of controller imprecision per module.
+fn bias_scale(m: ModuleId) -> f64 {
+    match m {
+        ModuleId::RodControl => 1.0,
+        ModuleId::PressurizerPressure => 0.08,
+        ModuleId::PressurizerLevel => 3.0,
+        ModuleId::FeedwaterLevel => 4.0,
+        ModuleId::SteamDump => 1.0,
+        ModuleId::TurbineGovernor => 10.0,
+        ModuleId::Excitation => 0.3,
+        ModuleId::BoronControl => 8.0,
+        _ => 0.0,
+    }
+}
+
 /// Nuclear instrumentation trip blocks.
 #[derive(Debug, Clone, Default)]
 pub struct NisState {
@@ -214,6 +279,10 @@ pub struct Pwr {
     gov: ctl::TurbineGovernor,
     boron_ctl: ctl::BoronControl,
     avr: ctl::Avr,
+
+    /// Slowly wandering setpoint error of each automation controller
+    /// (analog controllers wander more than digital ones).
+    ctl_bias: BTreeMap<ModuleId, f64>,
 
     // Instruments
     pub sensors: BTreeMap<&'static str, Sensor>,
@@ -322,6 +391,7 @@ impl Pwr {
             gov: ctl::TurbineGovernor::default(),
             boron_ctl: ctl::BoronControl::default(),
             avr: ctl::Avr::default(),
+            ctl_bias: BTreeMap::new(),
             sensors: BTreeMap::new(),
             readings: BTreeMap::new(),
             events: Vec::new(),
@@ -481,7 +551,39 @@ impl Pwr {
     fn shaft_efficiency(&self) -> f64 {
         let mut tg = self.tg.clone();
         tg.speed = 1.0;
-        (self.p.gross_mwe * 1e6 + tg.losses()) / self.p.thermal_power
+        let e = &self.automation.equipment;
+        let quality = e.perf(Slot::Turbine)
+            * e.perf(Slot::Generator).powf(0.3)
+            * e.perf(Slot::Condenser).powf(0.5);
+        (self.p.gross_mwe * 1e6 + tg.losses()) / self.p.thermal_power * quality
+    }
+
+    fn feed_max(&self) -> f64 {
+        self.p.feed_max_frac * self.automation.equipment.perf(Slot::FeedPumps)
+    }
+
+    /// Controller setpoint error for a module, in engineering units.
+    fn bias(&self, m: ModuleId) -> f64 {
+        self.ctl_bias.get(&m).copied().unwrap_or(0.0) * bias_scale(m)
+    }
+
+    fn step_biases(&mut self, dt: f64) {
+        let tau: f64 = 300.0;
+        for (m, c) in self.automation.equipment.controllers.clone() {
+            let sd = c.imprecision();
+            let b = self.ctl_bias.entry(m).or_insert(0.0);
+            *b += -*b / tau * dt + sd * (2.0 * dt / tau).sqrt() * self.rng.normal();
+        }
+    }
+
+    /// Re-derive equipment-dependent parameters (instrument noise).
+    pub fn apply_equipment(&mut self) {
+        let mult = (1.0 / self.automation.equipment.perf(Slot::BoardInstruments)).powi(8);
+        for (tag, _, noise, _) in SENSOR_SPEC {
+            if let Some(s) = self.sensors.get_mut(tag) {
+                s.noise = noise * mult;
+            }
+        }
     }
 
     fn loop_mass(&self) -> f64 {
@@ -604,7 +706,8 @@ impl Pwr {
             } else {
                 -1.0
             };
-            let speed = sign * self.p.rod_speed_manual;
+            let speed =
+                sign * self.p.rod_speed_manual * self.automation.equipment.perf(Slot::RodDrives);
             if self.rod_selection.eq_ignore_ascii_case("manual") {
                 let pos: Vec<f64> = self.banks[2..].iter().map(|b| b.position).collect();
                 let d = overlap_sequence(&pos, self.p.rod_max_steps, self.p.rod_overlap, speed, dt);
@@ -619,7 +722,7 @@ impl Pwr {
                 b.target = clamp(b.position + speed * dt, 0.0, b.max_steps);
             }
         }
-        let speed = self.p.rod_speed_max;
+        let speed = self.p.rod_speed_max * self.automation.equipment.perf(Slot::RodDrives);
         for b in &mut self.banks {
             b.drive(speed, dt);
         }
@@ -648,7 +751,8 @@ impl Pwr {
             let target = if self.rcp_running[i] { 1.0 } else { 0.0 };
             self.rcp_speed[i] += (target - self.rcp_speed[i]) * (dt / tau).min(1.0);
         }
-        let forced: f64 = self.rcp_speed.iter().sum::<f64>() / 4.0;
+        let forced: f64 = self.rcp_speed.iter().sum::<f64>() / 4.0
+            * self.automation.equipment.perf(Slot::CoolantPumps);
         let q_frac = self.thermal_fraction().max(0.0);
         let natural = 0.05 * q_frac.cbrt() + 0.002;
         self.flow_frac = forced.max(natural);
@@ -666,7 +770,10 @@ impl Pwr {
         let ts = self.t_steam;
         let ua_full = p.thermal_power / (p.tavg_full - p.steam_temp_full);
         let dryout = clamp(self.sg_mass / (0.3 * p.sg_mass_nominal), 0.0, 1.0);
-        let ua = ua_full * (0.25 + 0.75 * self.flow_frac.powf(0.8)) * dryout;
+        let ua = ua_full
+            * (0.25 + 0.75 * self.flow_frac.powf(0.8))
+            * dryout
+            * self.automation.equipment.perf(Slot::SteamGenerators);
         let t_sg_avg = 0.5 * (self.t_hot + self.t_sg);
         self.q_sg = ua * (t_sg_avg - ts);
 
@@ -713,7 +820,10 @@ impl Pwr {
         // Pressure: insurge compression + net heat input.
         let spray_flow = p.spray_max * self.spray * forced;
         let q_spray = spray_flow * (steam::hf(self.pressure) - steam::h_liquid(self.t_cold));
-        let q_net = self.heaters * p.heater_power - p.pzr_loss - q_spray;
+        let q_net =
+            self.heaters * p.heater_power * self.automation.equipment.perf(Slot::Pressurizer)
+                - p.pzr_loss
+                - q_spray;
         let mut dp =
             p.pzr_compression * self.pressure * insurge / v_steam + q_net / p.pzr_capacitance * dt;
         dp -= relief * 2_000.0 * dt; // steam relief depressurises
@@ -750,7 +860,7 @@ impl Pwr {
         let t_feed_target = lerp(40.0, p.feed_temp_full, load);
         self.t_feed += (t_feed_target - self.t_feed) * (dt / 60.0);
         let h_fw = steam::h_liquid(self.t_feed);
-        self.feed_flow = self.feed * p.feed_max_frac * w_nom;
+        self.feed_flow = self.feed * self.feed_max() * w_nom;
 
         let hf = steam::hf(ps);
         let hfg = steam::hg(ps) - hf;
@@ -844,59 +954,14 @@ impl Pwr {
     fn init_sensors(&mut self) {
         self.sensors.clear();
         let truth = self.true_values();
-        let spec: &[(&str, f64, f64, (f64, f64))] = &[
-            ("sr_cps", 1.0, 0.0, (0.0, 1.0e6)),
-            ("sr_sur_dpm", 1.0, 0.02, (-1.0, 5.0)),
-            ("ir_amps", 0.3, 0.0, (1.0e-11, 1.0e-3)),
-            ("ir_sur_dpm", 1.0, 0.02, (-1.0, 5.0)),
-            ("pr_n41_pct", 0.2, 0.15, (0.0, 120.0)),
-            ("pr_n42_pct", 0.2, 0.15, (0.0, 120.0)),
-            ("pr_n43_pct", 0.2, 0.15, (0.0, 120.0)),
-            ("pr_n44_pct", 0.2, 0.15, (0.0, 120.0)),
-            ("nuclear_power_pct", 0.2, 0.1, (0.0, 120.0)),
-            ("thermal_power_mw", 5.0, 3.0, (0.0, 4500.0)),
-            ("startup_rate_dpm", 1.0, 0.02, (-1.0, 5.0)),
-            ("tavg_c", 2.0, 0.05, (0.0, 400.0)),
-            ("tref_c", 0.0, 0.0, (0.0, 400.0)),
-            ("thot_c", 2.0, 0.05, (0.0, 400.0)),
-            ("tcold_c", 2.0, 0.05, (0.0, 400.0)),
-            ("delta_t_pct", 2.0, 0.2, (0.0, 150.0)),
-            ("rcs_pressure_mpa", 0.3, 0.005, (0.0, 20.0)),
-            ("pzr_level_pct", 1.0, 0.2, (0.0, 100.0)),
-            ("pzr_level_program_pct", 0.0, 0.0, (0.0, 100.0)),
-            ("rcs_flow_pct", 0.5, 0.3, (0.0, 120.0)),
-            ("boron_ppm", 60.0, 1.0, (0.0, 3000.0)),
-            ("pzr_heaters_pct", 0.0, 0.0, (0.0, 100.0)),
-            ("pzr_spray_pct", 0.0, 0.0, (0.0, 100.0)),
-            ("charging_kg_s", 1.0, 0.05, (0.0, 30.0)),
-            ("letdown_kg_s", 1.0, 0.05, (0.0, 30.0)),
-            ("sg_pressure_mpa", 0.3, 0.005, (0.0, 10.0)),
-            ("sg_level_pct", 1.0, 0.3, (0.0, 100.0)),
-            ("steam_flow_kg_s", 1.0, 2.0, (0.0, 2500.0)),
-            ("feed_flow_kg_s", 1.0, 2.0, (0.0, 2500.0)),
-            ("feed_demand_pct", 0.0, 0.0, (0.0, 100.0)),
-            ("feed_temp_c", 5.0, 0.2, (0.0, 300.0)),
-            ("turbine_valve_pct", 0.0, 0.0, (0.0, 100.0)),
-            ("steam_dump_pct", 0.0, 0.0, (0.0, 100.0)),
-            ("gross_mwe", 0.5, 1.0, (0.0, 1400.0)),
-            ("net_mwe", 0.5, 1.0, (-100.0, 1400.0)),
-            ("reactivity_pcm", 1.0, 0.5, (-20000.0, 1000.0)),
-            ("turbine_speed_rpm", 0.2, 0.2, (0.0, 2200.0)),
-            ("gen_freq_hz", 0.1, 0.002, (0.0, 70.0)),
-            ("grid_freq_hz", 0.1, 0.002, (55.0, 65.0)),
-            ("sync_phase_deg", 0.0, 0.0, (-180.0, 180.0)),
-            ("sync_slip_hz", 0.1, 0.001, (-70.0, 70.0)),
-            ("gen_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
-            ("grid_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
-            ("excitation_pct", 0.0, 0.0, (0.0, 100.0)),
-            ("generator_health_pct", 0.0, 0.0, (0.0, 100.0)),
-        ];
-        for (tag, tau, noise, range) in spec {
+        let spec = SENSOR_SPEC;
+        for (tag, tau, noise, range) in spec.iter() {
             let v = truth.get(tag).copied().unwrap_or(0.0);
             self.sensors
                 .insert(tag, Sensor::new(v, *tau, *noise, *range));
         }
         self.readings = truth;
+        self.apply_equipment();
     }
 
     fn read_instruments(&mut self, dt: f64) {
@@ -974,6 +1039,7 @@ impl Pwr {
         let w_nom = self.steam_nominal();
         let breaker = self.tg.breaker;
         let rpm = self.r("turbine_speed_rpm");
+        self.step_biases(dt);
 
         // Plant master sets the governor load target.
         if auto(self, ModuleId::PlantMaster) {
@@ -1050,7 +1116,12 @@ impl Pwr {
                     .automation
                     .setpoint(ModuleId::TurbineGovernor, "ramp_mw_min")
                     .unwrap_or(30.0);
-                self.turbine_valve = self.gov.update(target, ramp, self.r("gross_mwe"), dt);
+                self.turbine_valve = self.gov.update(
+                    target + self.bias(ModuleId::TurbineGovernor),
+                    ramp,
+                    self.r("gross_mwe"),
+                    dt,
+                );
             } else {
                 let target = self
                     .automation
@@ -1070,7 +1141,11 @@ impl Pwr {
                     .automation
                     .setpoint(ModuleId::Excitation, "voltage_kv")
                     .unwrap_or(22.0);
-                self.tg.excitation = self.avr.update(sp, self.r("gen_voltage_kv"), dt);
+                self.tg.excitation = self.avr.update(
+                    sp + self.bias(ModuleId::Excitation),
+                    self.r("gen_voltage_kv"),
+                    dt,
+                );
             } else {
                 self.avr.track(self.tg.excitation);
             }
@@ -1079,7 +1154,7 @@ impl Pwr {
         if auto(self, ModuleId::RodControl) && !self.reactor_tripped {
             let speed = self.rod_ctl.update(
                 tavg,
-                tref,
+                tref + self.bias(ModuleId::RodControl),
                 self.r("nuclear_power_pct") / 100.0,
                 self.turbine_load(),
                 dt,
@@ -1101,7 +1176,11 @@ impl Pwr {
                 .automation
                 .setpoint(ModuleId::BoronControl, "band_high_steps")
                 .unwrap_or(215.0);
-            self.boration = match self.boron_ctl.update(self.banks[5].position, low, high) {
+            let bb = self.bias(ModuleId::BoronControl);
+            self.boration = match self
+                .boron_ctl
+                .update(self.banks[5].position, low + bb, high + bb)
+            {
                 -1 => BorationMode::Dilute,
                 1 => BorationMode::Borate,
                 _ => BorationMode::Off,
@@ -1113,13 +1192,15 @@ impl Pwr {
                 .automation
                 .setpoint(ModuleId::PressurizerPressure, "pressure_mpa")
                 .unwrap_or(15.51);
-            let (h, s) = self.pzr_p_ctl.update(pressure, sp, dt);
+            let (h, s) =
+                self.pzr_p_ctl
+                    .update(pressure, sp + self.bias(ModuleId::PressurizerPressure), dt);
             self.heaters = h;
             self.spray = s;
         }
 
         if auto(self, ModuleId::PressurizerLevel) {
-            let sp = self.pzr_level_program(tavg);
+            let sp = self.pzr_level_program(tavg) + self.bias(ModuleId::PressurizerLevel);
             self.charging = self
                 .pzr_l_ctl
                 .update(self.r("pzr_level_pct"), sp, self.letdown, dt);
@@ -1130,10 +1211,13 @@ impl Pwr {
                 .automation
                 .setpoint(ModuleId::FeedwaterLevel, "level_pct")
                 .unwrap_or(50.0);
-            let steam_frac = self.r("steam_flow_kg_s") / (self.p.feed_max_frac * w_nom);
-            self.feed = self
-                .fw_ctl
-                .update(self.r("sg_level_pct"), sp, steam_frac, dt);
+            let steam_frac = self.r("steam_flow_kg_s") / (self.feed_max() * w_nom);
+            self.feed = self.fw_ctl.update(
+                self.r("sg_level_pct"),
+                sp + self.bias(ModuleId::FeedwaterLevel),
+                steam_frac,
+                dt,
+            );
         }
 
         if auto(self, ModuleId::SteamDump) {
@@ -1144,7 +1228,10 @@ impl Pwr {
             // Off-line (or tripped) the dumps hold no-load temperature;
             // on-line they only open on a load rejection.
             let hold_noload = self.reactor_tripped || !self.tg.breaker;
-            self.steam_dump = self.dump_ctl.update(tavg, tref, noload, hold_noload, dt);
+            let db = self.bias(ModuleId::SteamDump);
+            self.steam_dump = self
+                .dump_ctl
+                .update(tavg, tref + db, noload + db, hold_noload, dt);
         }
     }
 
@@ -1201,6 +1288,14 @@ impl Pwr {
             mode: self.automation.game_mode,
             owned: self.automation.owned.clone(),
             upgrades: self.automation.upgrades.clone(),
+            analog: self
+                .automation
+                .equipment
+                .controllers
+                .iter()
+                .filter(|(_, c)| matches!(c, Controller::Analog { .. }))
+                .map(|(m, _)| *m)
+                .collect(),
             module_modes: self.automation.modes.clone(),
         }
     }
@@ -1395,6 +1490,38 @@ impl Pwr {
             Command::SetUpgradeInstalled { upgrade, installed } => {
                 self.set_upgrade(*upgrade, *installed)
             }
+            Command::SetComponent { slot, era, tier } => {
+                self.automation.equipment.components.insert(
+                    *slot,
+                    nr_api::Component {
+                        era: *era,
+                        tier: *tier,
+                    },
+                );
+                self.events.push(PlantEvent::info(&format!(
+                    "{} replaced: {:?} {:?}",
+                    nr_api::equipment::slot_info(*slot).name,
+                    era,
+                    tier
+                )));
+                self.sandbox_fit_kits();
+            }
+            Command::SetModuleController { module, controller } => {
+                if self.automation.mode(*module) != ModuleMode::Manual {
+                    self.set_module_mode(*module, ModuleMode::Manual);
+                }
+                self.automation
+                    .equipment
+                    .controllers
+                    .insert(*module, *controller);
+                self.ctl_bias.remove(module);
+                self.events.push(PlantEvent::info(&format!(
+                    "{}: {} controller fitted",
+                    modules::info(*module).name,
+                    controller.label()
+                )));
+                self.sandbox_fit_kits();
+            }
             Command::SetModuleInstalled { module, installed } => {
                 self.set_module_installed(*module, *installed)
             }
@@ -1495,6 +1622,50 @@ impl Pwr {
             .push(PlantEvent::info(&format!("{name} {what}")));
     }
 
+    /// Sandbox: conversion kits are fitted automatically (free).
+    fn sandbox_fit_kits(&mut self) {
+        let e = &mut self.automation.equipment;
+        e.kits = e.required_kits().into_iter().map(|k| k.key).collect();
+        self.apply_equipment();
+    }
+
+    /// Install a complete equipment configuration (career purchases). Any
+    /// module that can no longer run in its current mode drops to MANUAL.
+    pub fn install(
+        &mut self,
+        owned: std::collections::BTreeSet<ModuleId>,
+        upgrades: std::collections::BTreeSet<UpgradeId>,
+        equipment: Equipment,
+    ) {
+        self.automation.owned = owned;
+        self.automation.upgrades = upgrades;
+        self.set_equipment(equipment);
+        let ctx = self.policy_context();
+        for m in modules::CATALOG {
+            let mode = self.automation.mode(m.id);
+            if mode == ModuleMode::Manual {
+                continue;
+            }
+            let check = Command::SetModuleMode { module: m.id, mode };
+            if authorize(&check, &Origin::Operator, &ctx).is_err() {
+                self.set_module_mode(m.id, ModuleMode::Manual);
+            }
+        }
+    }
+
+    /// Reactor shut down and generator off-line: heavy components may be
+    /// replaced.
+    pub fn in_outage(&self) -> bool {
+        self.kinetics.n < 1e-4 && !self.tg.breaker
+    }
+
+    /// Replace the whole equipment configuration (career commissioning).
+    pub fn set_equipment(&mut self, e: Equipment) {
+        self.automation.equipment = e;
+        self.ctl_bias.clear();
+        self.apply_equipment();
+    }
+
     fn set_module_installed(&mut self, module: ModuleId, installed: bool) {
         let changed = if installed {
             self.automation.owned.insert(module)
@@ -1541,7 +1712,7 @@ impl Pwr {
                 ModuleId::PressurizerPressure => self.pzr_p_ctl.track(self.heaters),
                 ModuleId::PressurizerLevel => self.pzr_l_ctl.track(self.charging, self.letdown),
                 ModuleId::FeedwaterLevel => {
-                    let sf = self.steam_flow / (self.p.feed_max_frac * self.steam_nominal());
+                    let sf = self.steam_flow / (self.feed_max() * self.steam_nominal());
                     self.fw_ctl.track(self.feed, sf)
                 }
                 ModuleId::TurbineGovernor => {
@@ -1841,6 +2012,8 @@ impl Pwr {
                     u.sections.iter().map(move |s| (s.to_string(), gen))
                 })
                 .collect(),
+            equipment: self.automation.equipment.clone(),
+            required_kits: self.automation.equipment.required_kits(),
             upgrades: nr_api::upgrades::CATALOG
                 .iter()
                 .map(|u| UpgradeView {

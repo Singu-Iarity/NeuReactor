@@ -82,10 +82,15 @@ fn sim_loop(world: Arc<Mutex<World>>) {
         let dt = nr_reactors::pwr::DT;
         // Cap work per tick so a huge time scale cannot starve the API.
         let mut steps = 0;
+        let t0 = w.plant.time;
         while debt >= dt && steps < 20_000 {
             w.plant.step();
             debt -= dt;
             steps += 1;
+        }
+        let World { plant, career, .. } = &mut *w;
+        if let Some(c) = career.as_mut() {
+            c.tick(plant.time - t0, plant);
         }
         if steps == 20_000 {
             debt = 0.0;
