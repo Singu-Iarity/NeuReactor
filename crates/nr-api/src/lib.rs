@@ -14,10 +14,12 @@ pub mod modules;
 pub mod policy;
 pub mod telemetry;
 
-pub use commands::{Actuator, BorationMode, Command, CommandKind};
+pub use commands::{
+    Actuator, BorationMode, Command, CommandKind, ControlRoomGeneration, NisBlock, RodDirection,
+};
 pub use modules::{ModuleId, ModuleInfo, ModuleMode, CATALOG};
 pub use policy::{authorize, can_read, Denied, GameMode, Origin, PolicyContext, Scope};
-pub use telemetry::{Alarm, ModuleView, RodView, Severity, Telemetry};
+pub use telemetry::{Alarm, ModuleView, NisView, RodView, Severity, Telemetry};
 
 /// API version exposed at `/api/v1`.
 pub const API_VERSION: u32 = 1;

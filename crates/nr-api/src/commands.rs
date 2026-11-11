@@ -20,6 +20,9 @@ pub enum Actuator {
     SteamDump,
     TurbineValves,
     GeneratorBreaker,
+    FieldBreaker,
+    Exciter,
+    NisBlocks,
     Diesels,
     AuxFeedwater,
 }
@@ -39,6 +42,9 @@ impl Actuator {
         Actuator::SteamDump,
         Actuator::TurbineValves,
         Actuator::GeneratorBreaker,
+        Actuator::FieldBreaker,
+        Actuator::Exciter,
+        Actuator::NisBlocks,
         Actuator::Diesels,
         Actuator::AuxFeedwater,
     ];
@@ -53,15 +59,51 @@ pub enum BorationMode {
     Dilute,
 }
 
+/// Rod control IN-HOLD-OUT lever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RodDirection {
+    In,
+    #[default]
+    Hold,
+    Out,
+}
+
+/// Nuclear instrumentation trip blocks the operator can apply above the
+/// relevant permissive (P-6 for source range, P-10 for the others).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NisBlock {
+    SourceRange,
+    IntermediateRange,
+    PowerRangeLow,
+}
+
+/// Control room technology generation of a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlRoomGeneration {
+    #[default]
+    Analog,
+    Digital,
+}
+
 /// Every action that can be taken on a plant. JSON form is
 /// `{"type": "move_rod_bank", "bank": "D", "target": 180}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     // --- manual actuator commands ---
+    /// Drive one bank to a target position (plugin-friendly).
     MoveRodBank {
         bank: String,
         target: f64,
+    },
+    /// Rod control lever. `selection` is `"manual"` (control banks in
+    /// overlap) or a single bank name (`"SA"`, `"D"`...).
+    RodMotion {
+        selection: String,
+        direction: RodDirection,
     },
     SetBoration {
         mode: BorationMode,
@@ -94,9 +136,21 @@ pub enum Command {
     SetGeneratorBreaker {
         closed: bool,
     },
+    SetFieldBreaker {
+        closed: bool,
+    },
+    SetExcitation {
+        fraction: f64,
+    },
+    BlockNis {
+        channel: NisBlock,
+        blocked: bool,
+    },
     // --- safety ---
     Scram,
     ResetTrip,
+    TripTurbine,
+    ResetTurbine,
     // --- automation ---
     SetModuleMode {
         module: ModuleId,
@@ -122,14 +176,24 @@ pub enum Command {
     SetTrainingMode {
         enabled: bool,
     },
+    RepairGenerator,
+    SetControlRoom {
+        generation: ControlRoomGeneration,
+    },
+    /// `"hot_standby"` or `"full_power"`.
+    LoadScenario {
+        name: String,
+    },
 }
 
 /// Coarse classification used by the access policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
     Manual(Actuator),
-    Scram,
-    ResetTrip,
+    /// Reactor or turbine trip: always a safe action.
+    Trip,
+    /// Reset of a reactor or turbine trip.
+    Reset,
     ModuleMode(ModuleId, ModuleMode),
     Setpoint(ModuleId),
     Sim,
@@ -141,7 +205,7 @@ impl Command {
         use Actuator as A;
         use Command as C;
         match self {
-            C::MoveRodBank { .. } => CommandKind::Manual(A::ControlRods),
+            C::MoveRodBank { .. } | C::RodMotion { .. } => CommandKind::Manual(A::ControlRods),
             C::SetBoration { .. } => CommandKind::Manual(A::Boration),
             C::SetPressurizerHeaters { .. } => CommandKind::Manual(A::PressurizerHeaters),
             C::SetPressurizerSpray { .. } => CommandKind::Manual(A::PressurizerSpray),
@@ -152,12 +216,19 @@ impl Command {
             C::SetSteamDump { .. } => CommandKind::Manual(A::SteamDump),
             C::SetTurbineValve { .. } => CommandKind::Manual(A::TurbineValves),
             C::SetGeneratorBreaker { .. } => CommandKind::Manual(A::GeneratorBreaker),
-            C::Scram => CommandKind::Scram,
-            C::ResetTrip => CommandKind::ResetTrip,
+            C::SetFieldBreaker { .. } => CommandKind::Manual(A::FieldBreaker),
+            C::SetExcitation { .. } => CommandKind::Manual(A::Exciter),
+            C::BlockNis { .. } => CommandKind::Manual(A::NisBlocks),
+            C::Scram | C::TripTurbine => CommandKind::Trip,
+            C::ResetTrip | C::ResetTurbine => CommandKind::Reset,
             C::SetModuleMode { module, mode } => CommandKind::ModuleMode(*module, *mode),
             C::SetSetpoint { module, .. } => CommandKind::Setpoint(*module),
             C::SetTimeScale { .. } | C::SetPaused { .. } => CommandKind::Sim,
-            C::InjectSensorFault { .. } | C::SetTrainingMode { .. } => CommandKind::Scenario,
+            C::InjectSensorFault { .. }
+            | C::SetTrainingMode { .. }
+            | C::RepairGenerator
+            | C::SetControlRoom { .. }
+            | C::LoadScenario { .. } => CommandKind::Scenario,
         }
     }
 }
@@ -184,5 +255,13 @@ mod tests {
             m.kind(),
             CommandKind::ModuleMode(ModuleId::RodControl, ModuleMode::Auto)
         );
+        let r: Command =
+            serde_json::from_str(r#"{"type":"rod_motion","selection":"manual","direction":"out"}"#)
+                .unwrap();
+        assert_eq!(r.kind(), CommandKind::Manual(Actuator::ControlRods));
+        let b: Command =
+            serde_json::from_str(r#"{"type":"block_nis","channel":"source_range","blocked":true}"#)
+                .unwrap();
+        assert_eq!(b.kind(), CommandKind::Manual(Actuator::NisBlocks));
     }
 }

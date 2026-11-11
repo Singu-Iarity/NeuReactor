@@ -3,24 +3,30 @@
 //! Model summary (see `docs/PHYSICS.md`):
 //! * point kinetics (6 delayed groups), Doppler / moderator / boron / rod /
 //!   xenon / samarium reactivity, 9-group decay heat;
+//! * Westinghouse-style nuclear instrumentation: source range (counts/s,
+//!   high voltage removed when blocked above P-6), intermediate range
+//!   (compensated ion chamber current, blockable above P-10) and four power
+//!   range channels;
 //! * lumped fuel heat capacity with fuel→coolant conductance;
 //! * primary loop as four mixing volumes (core, hot leg, SG tubes, cold leg)
 //!   with pump coastdown and natural circulation;
 //! * pressurizer with insurge compression, heaters, spray, PORV and safeties;
-//! * lumped saturated SG secondary, turbine, steam dumps, relief valves and
-//!   feedwater with extraction heating.
+//! * lumped saturated SG secondary, steam dumps, relief valves, feedwater;
+//! * turbine-generator shaft dynamics and grid synchronisation.
 
 use crate::plant::{AutomationState, PlantEvent};
 use nr_api::{
-    authorize, modules, Actuator, Alarm, BorationMode, Command, CommandKind, Denied, GameMode,
-    ModuleId, ModuleMode, ModuleView, Origin, PolicyContext, RodView, Severity, Telemetry,
-    API_VERSION,
+    authorize, modules, Actuator, Alarm, BorationMode, Command, CommandKind, ControlRoomGeneration,
+    Denied, GameMode, ModuleId, ModuleMode, ModuleView, NisBlock, NisView, Origin, PolicyContext,
+    RodDirection, RodView, Severity, Telemetry, API_VERSION,
 };
 use nr_control::controllers::{self as ctl, overlap_sequence};
 use nr_control::{Rps, RpsInputs};
 use nr_core::{clamp, lerp, steam, Rng, MPA};
+use nr_physics::turbine_generator::RATED_RPM;
 use nr_physics::{
-    DecayHeat, DelayedNeutronData, PointKinetics, Poisons, RodBank, Sensor, SensorFault,
+    CloseOutcome, DecayHeat, DelayedNeutronData, PointKinetics, Poisons, RodBank, Sensor,
+    SensorFault, TurbineGenerator,
 };
 use std::collections::BTreeMap;
 
@@ -29,6 +35,7 @@ use std::collections::BTreeMap;
 pub struct PwrParams {
     pub thermal_power: f64,
     pub gross_mwe: f64,
+    pub generator_rating: f64,
     pub flow_nominal: f64,
     pub cp_primary: f64,
     pub tavg_full: f64,
@@ -59,12 +66,18 @@ pub struct PwrParams {
     pub feed_max_frac: f64,
     pub turbine_valve_full: f64,
     pub dump_capacity: f64,
-    pub cycle_efficiency: f64,
     pub house_load_mwe: f64,
     pub rod_speed_max: f64,
+    pub rod_speed_manual: f64,
     pub rod_max_steps: f64,
     pub rod_overlap: f64,
     pub scram_time: f64,
+    /// Source range counts/s per unit relative flux.
+    pub sr_cps_per_n: f64,
+    /// Intermediate range amps per unit relative flux.
+    pub ir_amps_per_n: f64,
+    /// Intermediate range residual (gamma / leakage) current.
+    pub ir_floor_amps: f64,
 }
 
 impl Default for PwrParams {
@@ -72,6 +85,7 @@ impl Default for PwrParams {
         Self {
             thermal_power: 3411.0e6,
             gross_mwe: 1150.0,
+            generator_rating: 1300.0e6,
             flow_nominal: 17_700.0,
             cp_primary: 5_500.0,
             tavg_full: 308.6,
@@ -102,12 +116,15 @@ impl Default for PwrParams {
             feed_max_frac: 1.3,
             turbine_valve_full: 0.85,
             dump_capacity: 0.4,
-            cycle_efficiency: 1150.0 / 3411.0,
             house_load_mwe: 45.0,
             rod_speed_max: 72.0 / 60.0,
+            rod_speed_manual: 48.0 / 60.0,
             rod_max_steps: 228.0,
             rod_overlap: 100.0,
             scram_time: 2.2,
+            sr_cps_per_n: 5.0e10,
+            ir_amps_per_n: 8.0e-4,
+            ir_floor_amps: 1.0e-11,
         }
     }
 }
@@ -117,16 +134,30 @@ const PZR_PORV_CLOSE: f64 = 15.9 * MPA;
 const PZR_SAFETY: f64 = 17.2 * MPA;
 const SG_ARV: f64 = 7.85 * MPA;
 const SG_SAFETY: f64 = 8.3 * MPA;
+/// P-6 intermediate range permissive [A].
+const P6_AMPS: f64 = 1.0e-10;
+/// P-10 power range permissive [%].
+const P10_PCT: f64 = 10.0;
 /// Physics step [s].
 pub const DT: f64 = 0.05;
+
+/// Nuclear instrumentation trip blocks.
+#[derive(Debug, Clone, Default)]
+pub struct NisState {
+    pub sr_blocked: bool,
+    pub ir_blocked: bool,
+    pub pr_low_blocked: bool,
+}
 
 /// Complete PWR plant state.
 #[derive(Debug, Clone)]
 pub struct Pwr {
     pub p: PwrParams,
     pub name: String,
+    pub scenario: String,
     pub time: f64,
     pub training_mode: bool,
+    pub control_room: ControlRoomGeneration,
     rng: Rng,
 
     // Neutronics
@@ -136,6 +167,9 @@ pub struct Pwr {
     pub banks: Vec<RodBank>,
     pub boron_ppm: f64,
     pub boration: BorationMode,
+    pub rod_selection: String,
+    pub rod_direction: RodDirection,
+    pub nis: NisState,
 
     // Primary
     pub t_fuel: f64,
@@ -161,8 +195,10 @@ pub struct Pwr {
     pub t_feed: f64,
     pub turbine_valve: f64,
     pub steam_dump: f64,
-    pub breaker: bool,
     pub turbine_tripped: bool,
+    pub tg: TurbineGenerator,
+    pub sync_block_until: f64,
+    prev_breaker: bool,
 
     // Protection
     rps: Rps,
@@ -178,7 +214,7 @@ pub struct Pwr {
     dump_ctl: ctl::SteamDumpControl,
     gov: ctl::TurbineGovernor,
     boron_ctl: ctl::BoronControl,
-    sync: ctl::GeneratorSync,
+    avr: ctl::Avr,
 
     // Instruments
     pub sensors: BTreeMap<&'static str, Sensor>,
@@ -208,7 +244,7 @@ pub struct Reactivity {
 }
 
 impl Pwr {
-    /// Plant at equilibrium 100 % power with all supported automation in AUTO.
+    /// Plant at equilibrium 100 % power with the main control loops in AUTO.
     pub fn full_power() -> Self {
         let p = PwrParams::default();
         let q = p.thermal_power;
@@ -220,7 +256,7 @@ impl Pwr {
         let ps = steam::psat(p.steam_temp_full);
         let t_feed = p.feed_temp_full;
         let w_steam = q / (steam::hg(ps) - steam::h_liquid(t_feed));
-        let feed = w_steam / (p.feed_max_frac * w_steam);
+        let feed = 1.0 / p.feed_max_frac;
 
         let banks = vec![
             RodBank::new("SA", p.rod_max_steps, 0.030, p.rod_max_steps, true),
@@ -233,8 +269,10 @@ impl Pwr {
 
         let mut plant = Self {
             name: "Unit 1".into(),
+            scenario: "full_power".into(),
             time: 0.0,
             training_mode: false,
+            control_room: ControlRoomGeneration::Analog,
             rng: Rng::new(0x5EED),
             kinetics: PointKinetics::equilibrium(DelayedNeutronData::u235_thermal(), 1.0),
             poisons: Poisons::equilibrium(3.0e13, -0.028, -0.007, 1.0),
@@ -242,6 +280,13 @@ impl Pwr {
             banks,
             boron_ppm: 0.0,
             boration: BorationMode::Off,
+            rod_selection: "manual".into(),
+            rod_direction: RodDirection::Hold,
+            nis: NisState {
+                sr_blocked: true,
+                ir_blocked: true,
+                pr_low_blocked: true,
+            },
             t_fuel,
             t_core: t_hot,
             t_hot,
@@ -263,8 +308,10 @@ impl Pwr {
             t_feed,
             turbine_valve: p.turbine_valve_full,
             steam_dump: 0.0,
-            breaker: true,
             turbine_tripped: false,
+            tg: TurbineGenerator::synced(p.generator_rating),
+            sync_block_until: -1.0,
+            prev_breaker: true,
             rps: Rps::default(),
             reactor_tripped: false,
             trips: Vec::new(),
@@ -276,7 +323,7 @@ impl Pwr {
             dump_ctl: ctl::SteamDumpControl::default(),
             gov: ctl::TurbineGovernor::default(),
             boron_ctl: ctl::BoronControl::default(),
-            sync: ctl::GeneratorSync::default(),
+            avr: ctl::Avr::default(),
             sensors: BTreeMap::new(),
             readings: BTreeMap::new(),
             events: Vec::new(),
@@ -294,18 +341,16 @@ impl Pwr {
         let level = plant.pzr_level_program(plant.p.tavg_full) / 100.0;
         plant.pzr_water_vol = level * plant.p.vol_pzr;
         plant.rcs_mass = plant.loop_mass() + plant.pzr_water_vol * steam::rho_f(plant.pressure);
-
-        // Pressurizer heaters balance ambient losses.
         plant.heaters = plant.p.pzr_loss / plant.p.heater_power;
 
         // Critical boron concentration.
         plant.update_reactivity();
-        plant.boron_ppm = (plant.rho.total) / -plant.p.boron_worth;
+        plant.boron_ppm = plant.rho.total / -plant.p.boron_worth;
         plant.update_reactivity();
 
-        // Turbine valve coefficient is implied by the full power state.
         plant.gross_mwe = plant.p.gross_mwe;
         plant.gov.track(plant.turbine_valve, plant.gross_mwe);
+        plant.gov.speed_ref = RATED_RPM;
         plant
             .automation
             .setpoint_set(ModuleId::TurbineGovernor, "target_mwe", plant.p.gross_mwe);
@@ -315,10 +360,8 @@ impl Pwr {
         plant.rod_ctl.reset(1.0);
         plant.pzr_p_ctl.track(plant.heaters);
         plant.pzr_l_ctl.track(plant.charging, plant.letdown);
-        plant.fw_ctl.track(
-            plant.feed,
-            plant.feed / (1.0 / plant.p.feed_max_frac) * (1.0 / plant.p.feed_max_frac),
-        );
+        plant.fw_ctl.track(plant.feed, plant.feed);
+        plant.avr.track(plant.tg.excitation);
 
         for m in [
             ModuleId::RodControl,
@@ -327,12 +370,102 @@ impl Pwr {
             ModuleId::FeedwaterLevel,
             ModuleId::SteamDump,
             ModuleId::TurbineGovernor,
-            ModuleId::GeneratorSync,
+            ModuleId::Excitation,
         ] {
             plant.automation.modes.insert(m, ModuleMode::Auto);
         }
         plant.init_sensors();
         plant
+    }
+
+    /// Hot standby a week after shutdown: no-load temperature and pressure,
+    /// all rods inserted, xenon decayed, turbine on turning gear. The
+    /// operator must take the reactor critical on the source range and
+    /// work up through the intermediate and power ranges.
+    pub fn hot_standby() -> Self {
+        let mut plant = Self::full_power();
+        plant.scenario = "hot_standby".into();
+        let week = 7.0 * 86_400.0;
+        plant.decay.step(0.0, week);
+        for _ in 0..(week / 600.0) as usize {
+            plant.poisons.step(0.0, 600.0);
+        }
+        let tnl = plant.p.tavg_noload;
+        plant.t_fuel = tnl;
+        plant.t_core = tnl;
+        plant.t_hot = tnl;
+        plant.t_sg = tnl;
+        plant.t_cold = tnl;
+        plant.t_steam = tnl;
+        plant.t_feed = 40.0;
+
+        // Boron for an estimated critical position of C=160 / D=60 steps.
+        for (b, pos) in plant
+            .banks
+            .iter_mut()
+            .zip([228.0, 228.0, 228.0, 228.0, 160.0, 60.0])
+        {
+            b.position = pos;
+        }
+        plant.boron_ppm = 0.0;
+        plant.update_reactivity();
+        plant.boron_ppm = plant.rho.total / -plant.p.boron_worth;
+        for b in &mut plant.banks {
+            b.position = 0.0;
+            b.target = 0.0;
+        }
+        plant.update_reactivity();
+        let data = DelayedNeutronData::u235_thermal();
+        let source = plant.kinetics.source;
+        let n = source * data.generation_time / -plant.rho.total;
+        plant.kinetics = PointKinetics::equilibrium(data, n);
+        plant.kinetics.source = source;
+
+        let level = plant.pzr_level_program(tnl) / 100.0;
+        plant.pzr_water_vol = level * plant.p.vol_pzr;
+        plant.rcs_mass = plant.loop_mass() + plant.pzr_water_vol * steam::rho_f(plant.pressure);
+
+        plant.feed = 0.0;
+        plant.turbine_valve = 0.0;
+        plant.turbine_tripped = true;
+        plant.tg.breaker = false;
+        plant.prev_breaker = false;
+        plant.tg.field_breaker = false;
+        plant.tg.excitation = 0.0;
+        plant.tg.speed = 3.0 / RATED_RPM; // turning gear
+        plant.gross_mwe = 0.0;
+        plant.steam_flow = 0.0;
+        plant.feed_flow = 0.0;
+        plant.q_core = plant.thermal_fraction() * plant.p.thermal_power;
+        plant.q_sg = plant.q_core;
+        plant.nis = NisState::default();
+        plant.gov.track_speed(0.0, plant.tg.rpm());
+        plant.gov.track(0.0, 0.0);
+        plant.avr.track(0.0);
+        plant
+            .automation
+            .setpoint_set(ModuleId::TurbineGovernor, "target_mwe", 0.0);
+        plant
+            .automation
+            .setpoint_set(ModuleId::TurbineGovernor, "speed_rpm", 0.0);
+        plant
+            .automation
+            .setpoint_set(ModuleId::PlantMaster, "target_mwe", 0.0);
+        plant.fw_ctl.track(0.0, 0.0);
+        plant
+            .automation
+            .modes
+            .insert(ModuleId::RodControl, ModuleMode::Manual);
+        plant.init_sensors();
+        plant
+    }
+
+    pub fn from_scenario(name: &str) -> Option<Self> {
+        match name {
+            "full_power" => Some(Self::full_power()),
+            "hot_standby" => Some(Self::hot_standby()),
+            _ => None,
+        }
     }
 
     fn turbine_cv(&self) -> f64 {
@@ -343,6 +476,14 @@ impl Pwr {
 
     fn steam_nominal(&self) -> f64 {
         self.turbine_cv() * self.p.turbine_valve_full * steam::psat(self.p.steam_temp_full)
+    }
+
+    /// Steam-to-shaft efficiency, calibrated so full power gives rated
+    /// gross output after windage and friction losses.
+    fn shaft_efficiency(&self) -> f64 {
+        let mut tg = self.tg.clone();
+        tg.speed = 1.0;
+        (self.p.gross_mwe * 1e6 + tg.losses()) / self.p.thermal_power
     }
 
     fn loop_mass(&self) -> f64 {
@@ -404,6 +545,11 @@ impl Pwr {
         self.kinetics.n * (1.0 - DecayHeat::delayed_fraction()) + self.decay.power()
     }
 
+    pub fn sync_check_active(&self) -> bool {
+        self.control_room == ControlRoomGeneration::Digital
+            || self.automation.mode(ModuleId::GeneratorSync) == ModuleMode::Auto
+    }
+
     fn update_reactivity(&mut self) {
         let p = &self.p;
         let tc_core = 0.5 * (self.t_cold + self.t_core);
@@ -425,6 +571,7 @@ impl Pwr {
         let dt = DT;
         self.time += dt;
         self.read_instruments(dt);
+        self.update_nis_permissives();
         self.run_automation(dt);
         self.run_protection();
         self.step_rods(dt);
@@ -447,6 +594,30 @@ impl Pwr {
                 b.drop(self.p.scram_time, dt);
             }
             return;
+        }
+        // Manual rod control lever.
+        if self.automation.mode(ModuleId::RodControl) == ModuleMode::Manual
+            && self.rod_direction != RodDirection::Hold
+        {
+            let sign = if self.rod_direction == RodDirection::Out {
+                1.0
+            } else {
+                -1.0
+            };
+            let speed = sign * self.p.rod_speed_manual;
+            if self.rod_selection.eq_ignore_ascii_case("manual") {
+                let pos: Vec<f64> = self.banks[2..].iter().map(|b| b.position).collect();
+                let d = overlap_sequence(&pos, self.p.rod_max_steps, self.p.rod_overlap, speed, dt);
+                for (b, d) in self.banks[2..].iter_mut().zip(d) {
+                    b.target = clamp(b.position + d, 0.0, b.max_steps);
+                }
+            } else if let Some(b) = self
+                .banks
+                .iter_mut()
+                .find(|b| b.name.eq_ignore_ascii_case(&self.rod_selection))
+            {
+                b.target = clamp(b.position + speed * dt, 0.0, b.max_steps);
+            }
         }
         let speed = self.p.rod_speed_max;
         for b in &mut self.banks {
@@ -555,15 +726,11 @@ impl Pwr {
         let cv = self.turbine_cv();
         let w_nom = self.steam_nominal();
 
-        let mut w_turb = if self.turbine_tripped {
+        let w_turb = if self.turbine_tripped {
             0.0
         } else {
             self.turbine_valve * cv * ps
         };
-        if !self.breaker {
-            // Unloaded turbine only passes rolling steam.
-            w_turb = w_turb.min(0.05 * w_nom);
-        }
         let w_dump =
             self.steam_dump * p.dump_capacity * w_nom * ps / steam::psat(p.steam_temp_full);
         let w_arv = if ps > SG_ARV {
@@ -591,8 +758,21 @@ impl Pwr {
         self.t_steam += (self.q_sg - q_out) / p.sg_capacitance * dt;
         self.sg_mass = (self.sg_mass + (self.feed_flow - self.steam_flow) * dt).max(0.0);
 
-        self.gross_mwe = if self.breaker && !self.turbine_tripped {
-            w_turb * (steam::hg(ps) - h_fw) * p.cycle_efficiency / 1e6
+        // Turbine-generator.
+        let p_mech = w_turb * (steam::hg(ps) - h_fw) * self.shaft_efficiency();
+        if let Some(event) = self.tg.step(p_mech, dt, &mut self.rng) {
+            match event {
+                "Turbine overspeed" => {
+                    self.events.push(PlantEvent::trip("Turbine overspeed trip"));
+                    self.trip_turbine();
+                }
+                other => self.events.push(PlantEvent::warn(&format!(
+                    "{other}: generator breaker opened"
+                ))),
+            }
+        }
+        self.gross_mwe = if self.tg.breaker {
+            (self.tg.net_power / 1e6).max(0.0)
         } else {
             0.0
         };
@@ -602,14 +782,28 @@ impl Pwr {
 
     fn true_values(&self) -> BTreeMap<&'static str, f64> {
         let mut m = BTreeMap::new();
+        let n = self.kinetics.n;
         let dt_core = self.t_hot - self.t_cold;
         let dt_full = self.p.thermal_power / (self.p.flow_nominal * self.p.cp_primary);
-        m.insert("nuclear_power_pct", self.kinetics.n * 100.0);
+        let sur = 26.06 / self.kinetics.period;
+        let sr = if self.nis.sr_blocked {
+            0.0
+        } else {
+            self.p.sr_cps_per_n * n
+        };
+        m.insert("sr_cps", sr);
+        m.insert("sr_sur_dpm", if self.nis.sr_blocked { 0.0 } else { sur });
+        m.insert("ir_amps", self.p.ir_amps_per_n * n + self.p.ir_floor_amps);
+        m.insert("ir_sur_dpm", sur);
+        for tag in ["pr_n41_pct", "pr_n42_pct", "pr_n43_pct", "pr_n44_pct"] {
+            m.insert(tag, n * 100.0);
+        }
+        m.insert("nuclear_power_pct", n * 100.0);
         m.insert(
             "thermal_power_mw",
             self.thermal_fraction() * self.p.thermal_power / 1e6,
         );
-        m.insert("startup_rate_dpm", 26.06 / self.kinetics.period);
+        m.insert("startup_rate_dpm", sur);
         m.insert("tavg_c", self.tavg());
         m.insert("tref_c", self.tref());
         m.insert("thot_c", self.t_hot);
@@ -635,15 +829,33 @@ impl Pwr {
         m.insert("gross_mwe", self.gross_mwe);
         m.insert("net_mwe", self.gross_mwe - self.p.house_load_mwe);
         m.insert("reactivity_pcm", self.rho.total * 1e5);
+        m.insert("turbine_speed_rpm", self.tg.rpm());
+        m.insert("gen_freq_hz", self.tg.gen_hz());
+        m.insert("grid_freq_hz", self.tg.grid_hz);
+        m.insert("sync_phase_deg", self.tg.phase);
+        m.insert("sync_slip_hz", self.tg.slip_hz());
+        m.insert("gen_voltage_kv", self.tg.gen_kv());
+        m.insert("grid_voltage_kv", self.tg.grid_kv);
+        m.insert("excitation_pct", self.tg.excitation * 100.0);
+        m.insert("generator_health_pct", self.tg.health);
         m
     }
 
     fn init_sensors(&mut self) {
+        self.sensors.clear();
         let truth = self.true_values();
         let spec: &[(&str, f64, f64, (f64, f64))] = &[
-            ("nuclear_power_pct", 0.2, 0.15, (0.0, 125.0)),
+            ("sr_cps", 1.0, 0.0, (0.0, 1.0e6)),
+            ("sr_sur_dpm", 1.0, 0.02, (-1.0, 5.0)),
+            ("ir_amps", 0.3, 0.0, (1.0e-11, 1.0e-3)),
+            ("ir_sur_dpm", 1.0, 0.02, (-1.0, 5.0)),
+            ("pr_n41_pct", 0.2, 0.15, (0.0, 120.0)),
+            ("pr_n42_pct", 0.2, 0.15, (0.0, 120.0)),
+            ("pr_n43_pct", 0.2, 0.15, (0.0, 120.0)),
+            ("pr_n44_pct", 0.2, 0.15, (0.0, 120.0)),
+            ("nuclear_power_pct", 0.2, 0.1, (0.0, 120.0)),
             ("thermal_power_mw", 5.0, 3.0, (0.0, 4500.0)),
-            ("startup_rate_dpm", 1.0, 0.02, (-1.0, 10.0)),
+            ("startup_rate_dpm", 1.0, 0.02, (-1.0, 5.0)),
             ("tavg_c", 2.0, 0.05, (0.0, 400.0)),
             ("tref_c", 0.0, 0.0, (0.0, 400.0)),
             ("thot_c", 2.0, 0.05, (0.0, 400.0)),
@@ -660,8 +872,8 @@ impl Pwr {
             ("letdown_kg_s", 1.0, 0.05, (0.0, 30.0)),
             ("sg_pressure_mpa", 0.3, 0.005, (0.0, 10.0)),
             ("sg_level_pct", 1.0, 0.3, (0.0, 100.0)),
-            ("steam_flow_kg_s", 1.0, 5.0, (0.0, 2500.0)),
-            ("feed_flow_kg_s", 1.0, 5.0, (0.0, 2500.0)),
+            ("steam_flow_kg_s", 1.0, 2.0, (0.0, 2500.0)),
+            ("feed_flow_kg_s", 1.0, 2.0, (0.0, 2500.0)),
             ("feed_demand_pct", 0.0, 0.0, (0.0, 100.0)),
             ("feed_temp_c", 5.0, 0.2, (0.0, 300.0)),
             ("turbine_valve_pct", 0.0, 0.0, (0.0, 100.0)),
@@ -669,6 +881,15 @@ impl Pwr {
             ("gross_mwe", 0.5, 1.0, (0.0, 1400.0)),
             ("net_mwe", 0.5, 1.0, (-100.0, 1400.0)),
             ("reactivity_pcm", 1.0, 0.5, (-20000.0, 1000.0)),
+            ("turbine_speed_rpm", 0.2, 0.2, (0.0, 2200.0)),
+            ("gen_freq_hz", 0.1, 0.002, (0.0, 70.0)),
+            ("grid_freq_hz", 0.1, 0.002, (55.0, 65.0)),
+            ("sync_phase_deg", 0.0, 0.0, (-180.0, 180.0)),
+            ("sync_slip_hz", 0.1, 0.001, (-70.0, 70.0)),
+            ("gen_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
+            ("grid_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
+            ("excitation_pct", 0.0, 0.0, (0.0, 100.0)),
+            ("generator_health_pct", 0.0, 0.0, (0.0, 100.0)),
         ];
         for (tag, tau, noise, range) in spec {
             let v = truth.get(tag).copied().unwrap_or(0.0);
@@ -680,15 +901,67 @@ impl Pwr {
 
     fn read_instruments(&mut self, dt: f64) {
         let truth = self.true_values();
+        let sr_off = self.nis.sr_blocked;
         for (tag, s) in self.sensors.iter_mut() {
             let t = truth.get(tag).copied().unwrap_or(0.0);
             let t = if t.is_finite() { t } else { 0.0 };
-            self.readings.insert(tag, s.update(t, dt, &mut self.rng));
+            if sr_off && (*tag == "sr_cps" || *tag == "sr_sur_dpm") {
+                // High voltage removed: the channel reads zero at once.
+                s.value = 0.0;
+                self.readings.insert(tag, 0.0);
+                continue;
+            }
+            let mut v = s.update(t, dt, &mut self.rng);
+            if s.fault == SensorFault::None {
+                match *tag {
+                    // Counting statistics (~1 s counting interval).
+                    "sr_cps" => v = (v + v.max(0.0).sqrt() * self.rng.normal()).max(0.0),
+                    "ir_amps" => v *= 1.0 + 0.02 * self.rng.normal(),
+                    _ => {}
+                }
+            }
+            self.readings.insert(tag, v);
         }
     }
 
     fn r(&self, tag: &str) -> f64 {
         self.readings.get(tag).copied().unwrap_or(0.0)
+    }
+
+    fn p6(&self) -> bool {
+        self.r("ir_amps") > P6_AMPS
+    }
+
+    fn p10(&self) -> bool {
+        ["pr_n41_pct", "pr_n42_pct", "pr_n43_pct", "pr_n44_pct"]
+            .iter()
+            .filter(|t| self.r(t) > P10_PCT)
+            .count()
+            >= 2
+    }
+
+    /// Below the permissives (with reset hysteresis) the blocks are removed
+    /// automatically.
+    fn update_nis_permissives(&mut self) {
+        let p10_reset = ["pr_n41_pct", "pr_n42_pct", "pr_n43_pct", "pr_n44_pct"]
+            .iter()
+            .filter(|t| self.r(t) > P10_PCT - 2.0)
+            .count()
+            < 2;
+        let p6_reset = self.r("ir_amps") < 0.3 * P6_AMPS;
+        if p10_reset && (self.nis.ir_blocked || self.nis.pr_low_blocked) {
+            self.nis.ir_blocked = false;
+            self.nis.pr_low_blocked = false;
+            self.events.push(PlantEvent::info(
+                "P-10 cleared: IR and PR low-setpoint trips reinstated",
+            ));
+        }
+        if p6_reset && self.nis.sr_blocked {
+            self.nis.sr_blocked = false;
+            self.events.push(PlantEvent::info(
+                "P-6 cleared: source range energised and trip reinstated",
+            ));
+        }
     }
 
     // ------------------------------------------------------------ automation
@@ -699,8 +972,10 @@ impl Pwr {
         let tref = self.tref();
         let pressure = self.r("rcs_pressure_mpa");
         let w_nom = self.steam_nominal();
+        let breaker = self.tg.breaker;
+        let rpm = self.r("turbine_speed_rpm");
 
-        // Plant master sets the governor target.
+        // Plant master sets the governor load target.
         if auto(self, ModuleId::PlantMaster) {
             let target = self
                 .automation
@@ -716,30 +991,88 @@ impl Pwr {
                 .setpoint_set(ModuleId::TurbineGovernor, "target_mwe", t);
         }
 
-        if auto(self, ModuleId::TurbineGovernor) && !self.turbine_tripped {
-            let target = self
-                .automation
-                .setpoint(ModuleId::TurbineGovernor, "target_mwe")
-                .unwrap_or(0.0);
-            let ramp = self
-                .automation
-                .setpoint(ModuleId::TurbineGovernor, "ramp_mw_min")
-                .unwrap_or(30.0);
-            if self.breaker {
-                self.turbine_valve = self.gov.update(target, ramp, self.r("gross_mwe"), dt);
-            } else {
-                // Roll the turbine for synchronisation.
-                self.turbine_valve = 0.03;
-                self.gov.track(0.03, 0.0);
+        // Auto-synchronizer near synchronous speed.
+        if auto(self, ModuleId::GeneratorSync) && !breaker && !self.turbine_tripped && rpm > 1750.0
+        {
+            let a = ctl::AutoSynchronizer.update(
+                self.tg.grid_hz,
+                self.tg.grid_kv,
+                self.tg.gen_kv(),
+                self.tg.phase,
+                self.tg.slip_hz(),
+            );
+            if auto(self, ModuleId::TurbineGovernor) {
+                self.automation
+                    .setpoint_set(ModuleId::TurbineGovernor, "speed_rpm", a.speed_rpm);
+            }
+            if auto(self, ModuleId::Excitation) {
+                self.automation
+                    .setpoint_set(ModuleId::Excitation, "voltage_kv", a.voltage_kv);
+            }
+            if a.close && self.tg.close(true) == CloseOutcome::Closed {
+                self.events.push(PlantEvent::info(
+                    "Generator synchronised to grid (auto-synchronizer)",
+                ));
             }
         }
 
-        if auto(self, ModuleId::GeneratorSync) && !self.breaker && !self.turbine_tripped {
-            let rolling = self.turbine_valve > 0.01 && self.steam_pressure() > 5.0 * MPA;
-            if self.sync.update(rolling, dt) {
-                self.breaker = true;
-                self.events
-                    .push(PlantEvent::info("Generator synchronised to grid"));
+        // Breaker state transitions switch the governor between speed and load control.
+        if self.tg.breaker != self.prev_breaker {
+            if self.tg.breaker {
+                let pickup = (0.05 * self.p.gross_mwe).max(self.gross_mwe);
+                self.gov.track(self.turbine_valve, self.gross_mwe);
+                let tgt = self
+                    .automation
+                    .setpoint(ModuleId::TurbineGovernor, "target_mwe")
+                    .unwrap_or(0.0);
+                if tgt < pickup {
+                    self.automation
+                        .setpoint_set(ModuleId::TurbineGovernor, "target_mwe", pickup);
+                }
+            } else {
+                self.gov.track_speed(self.turbine_valve, rpm);
+                self.automation
+                    .setpoint_set(ModuleId::TurbineGovernor, "speed_rpm", RATED_RPM);
+            }
+            self.prev_breaker = self.tg.breaker;
+        }
+
+        if auto(self, ModuleId::TurbineGovernor) {
+            if self.turbine_tripped {
+                self.turbine_valve = 0.0;
+                self.gov.track_speed(0.0, rpm);
+            } else if self.tg.breaker {
+                let target = self
+                    .automation
+                    .setpoint(ModuleId::TurbineGovernor, "target_mwe")
+                    .unwrap_or(0.0);
+                let ramp = self
+                    .automation
+                    .setpoint(ModuleId::TurbineGovernor, "ramp_mw_min")
+                    .unwrap_or(30.0);
+                self.turbine_valve = self.gov.update(target, ramp, self.r("gross_mwe"), dt);
+            } else {
+                let target = self
+                    .automation
+                    .setpoint(ModuleId::TurbineGovernor, "speed_rpm")
+                    .unwrap_or(0.0);
+                let accel = self
+                    .automation
+                    .setpoint(ModuleId::TurbineGovernor, "accel_rpm_min")
+                    .unwrap_or(300.0);
+                self.turbine_valve = self.gov.update_speed(target, accel, rpm, dt);
+            }
+        }
+
+        if auto(self, ModuleId::Excitation) {
+            if self.tg.field_breaker && !self.tg.breaker {
+                let sp = self
+                    .automation
+                    .setpoint(ModuleId::Excitation, "voltage_kv")
+                    .unwrap_or(22.0);
+                self.tg.excitation = self.avr.update(sp, self.r("gen_voltage_kv"), dt);
+            } else {
+                self.avr.track(self.tg.excitation);
             }
         }
 
@@ -808,21 +1141,26 @@ impl Pwr {
                 .automation
                 .setpoint(ModuleId::SteamDump, "noload_tavg_c")
                 .unwrap_or(self.p.tavg_noload);
-            self.steam_dump = self
-                .dump_ctl
-                .update(tavg, tref, noload, self.reactor_tripped, dt);
+            // Off-line (or tripped) the dumps hold no-load temperature;
+            // on-line they only open on a load rejection.
+            let hold_noload = self.reactor_tripped || !self.tg.breaker;
+            self.steam_dump = self.dump_ctl.update(tavg, tref, noload, hold_noload, dt);
         }
     }
 
     fn run_protection(&mut self) {
         let inputs = RpsInputs {
+            sr_cps: self.r("sr_cps"),
+            ir_amps: self.r("ir_amps"),
             flux_pct: self.r("nuclear_power_pct"),
+            sr_blocked: self.nis.sr_blocked,
+            ir_blocked: self.nis.ir_blocked,
+            pr_low_blocked: self.nis.pr_low_blocked,
             pressure_mpa: self.r("rcs_pressure_mpa"),
             pzr_level_pct: self.r("pzr_level_pct"),
             flow_pct: self.r("rcs_flow_pct"),
             min_sg_level_pct: self.r("sg_level_pct"),
             delta_t_pct: self.r("delta_t_pct"),
-            startup_rate_dpm: self.r("startup_rate_dpm"),
             turbine_tripped: self.turbine_tripped,
         };
         let signals = self.rps.evaluate(&inputs);
@@ -830,6 +1168,7 @@ impl Pwr {
             return;
         }
         for s in signals {
+            // "Turbine trip above P-9" is a consequence while already tripped.
             if !self.trips.iter().any(|t| t == s) {
                 self.trips.push(s.to_string());
                 self.events.push(PlantEvent::trip(s));
@@ -842,6 +1181,7 @@ impl Pwr {
 
     fn trip_reactor(&mut self) {
         self.reactor_tripped = true;
+        self.rod_direction = RodDirection::Hold;
         self.trip_turbine();
     }
 
@@ -849,8 +1189,8 @@ impl Pwr {
         if !self.turbine_tripped {
             self.turbine_tripped = true;
             self.turbine_valve = 0.0;
-            self.breaker = false;
-            self.events.push(PlantEvent::warn("Turbine tripped"));
+            self.events
+                .push(PlantEvent::warn("Turbine tripped (stop valves closed)"));
         }
     }
 
@@ -885,6 +1225,29 @@ impl Pwr {
                 };
                 b.target = clamp(*target, 0.0, b.max_steps);
             }
+            Command::RodMotion {
+                selection,
+                direction,
+            } => {
+                let valid = selection.eq_ignore_ascii_case("manual")
+                    || self
+                        .banks
+                        .iter()
+                        .any(|b| b.name.eq_ignore_ascii_case(selection));
+                if !valid {
+                    return deny("bank selector must be MANUAL or a bank name");
+                }
+                if self.reactor_tripped && *direction == RodDirection::Out {
+                    return deny("reactor trip is latched; reset before withdrawing rods");
+                }
+                self.rod_selection = selection.clone();
+                self.rod_direction = *direction;
+                if *direction == RodDirection::Hold {
+                    for b in &mut self.banks {
+                        b.target = b.position;
+                    }
+                }
+            }
             Command::SetBoration { mode } => self.boration = *mode,
             Command::SetPressurizerHeaters { fraction } => {
                 self.heaters = clamp(*fraction, 0.0, 1.0)
@@ -902,34 +1265,91 @@ impl Pwr {
             Command::SetSteamDump { fraction } => self.steam_dump = clamp(*fraction, 0.0, 1.0),
             Command::SetTurbineValve { fraction } => {
                 if self.turbine_tripped {
-                    return deny("turbine is tripped; reset first");
+                    return deny("turbine is tripped; reset (latch) the turbine first");
                 }
                 self.turbine_valve = clamp(*fraction, 0.0, 1.0);
             }
-            Command::SetGeneratorBreaker { closed } => {
-                if *closed && self.turbine_tripped {
-                    return deny("turbine is tripped");
+            Command::SetGeneratorBreaker { closed: false } => {
+                if self.tg.breaker {
+                    self.tg.open();
+                    self.events
+                        .push(PlantEvent::warn("Generator breaker opened by operator"));
                 }
-                self.breaker = *closed;
+            }
+            Command::SetGeneratorBreaker { closed: true } => return self.close_breaker(),
+            Command::SetFieldBreaker { closed } => {
+                self.tg.field_breaker = *closed;
+                if *closed {
+                    self.avr.track(self.tg.excitation);
+                }
+            }
+            Command::SetExcitation { fraction } => self.tg.excitation = clamp(*fraction, 0.0, 1.0),
+            Command::BlockNis { channel, blocked } => {
+                if *blocked {
+                    match channel {
+                        NisBlock::SourceRange if !self.p6() => {
+                            return deny("source range block requires P-6 (IR above 1E-10 A)")
+                        }
+                        NisBlock::IntermediateRange | NisBlock::PowerRangeLow if !self.p10() => {
+                            return deny("block requires P-10 (2/4 power range above 10 %)")
+                        }
+                        _ => {}
+                    }
+                }
+                let (flag, name) = match channel {
+                    NisBlock::SourceRange => (&mut self.nis.sr_blocked, "Source range"),
+                    NisBlock::IntermediateRange => (&mut self.nis.ir_blocked, "Intermediate range"),
+                    NisBlock::PowerRangeLow => {
+                        (&mut self.nis.pr_low_blocked, "Power range low setpoint")
+                    }
+                };
+                *flag = *blocked;
+                if *channel == NisBlock::SourceRange && *blocked {
+                    self.readings.insert("sr_cps", 0.0);
+                    self.readings.insert("sr_sur_dpm", 0.0);
+                }
+                let what = if *blocked {
+                    "trip blocked"
+                } else {
+                    "trip reset (unblocked)"
+                };
+                self.events
+                    .push(PlantEvent::info(&format!("{name} {what}")));
             }
             Command::Scram => {
                 self.trips.push("Manual reactor trip".into());
                 self.events.push(PlantEvent::trip("Manual reactor trip"));
                 self.trip_reactor();
             }
+            Command::TripTurbine => {
+                self.events.push(PlantEvent::warn("Manual turbine trip"));
+                self.trip_turbine();
+            }
             Command::ResetTrip => {
-                let inputs_ok =
-                    self.banks.iter().all(|b| b.position <= 0.0) || !self.reactor_tripped;
-                if !inputs_ok {
+                if self.reactor_tripped && self.banks.iter().any(|b| b.position > 0.0) {
                     return deny("rods still inserting");
                 }
                 self.reactor_tripped = false;
-                self.turbine_tripped = false;
                 self.trips.clear();
                 for b in &mut self.banks {
                     b.target = b.position;
                 }
                 self.events.push(PlantEvent::info("Reactor trip reset"));
+            }
+            Command::ResetTurbine => {
+                if self.reactor_tripped {
+                    return deny("reactor trip present: turbine trip cannot be reset");
+                }
+                if self.tg.speed > 1.05 {
+                    return deny("turbine overspeed: wait for speed to fall");
+                }
+                if self.turbine_tripped {
+                    self.turbine_tripped = false;
+                    self.turbine_valve = 0.0;
+                    self.gov.track_speed(0.0, self.tg.rpm());
+                    self.events
+                        .push(PlantEvent::info("Turbine reset (latched)"));
+                }
             }
             Command::SetModuleMode { module, mode } => self.set_module_mode(*module, *mode),
             Command::SetSetpoint { module, key, value } => {
@@ -937,9 +1357,6 @@ impl Pwr {
                     return deny("unknown setpoint for this module");
                 }
                 self.automation.setpoint_set(*module, key, *value);
-                if *module == ModuleId::PlantMaster && key == "target_mwe" {
-                    // nothing else to do: plant master pushes it to the governor
-                }
             }
             Command::SetTimeScale { .. } | Command::SetPaused { .. } => {
                 // Handled by the host (server / CLI) loop.
@@ -958,14 +1375,89 @@ impl Pwr {
                 s.fault = f;
             }
             Command::SetTrainingMode { enabled } => self.training_mode = *enabled,
+            Command::RepairGenerator => {
+                self.tg.repair();
+                self.events
+                    .push(PlantEvent::info("Generator repaired, 86G lockout reset"));
+            }
+            Command::SetControlRoom { generation } => {
+                self.control_room = *generation;
+                self.events.push(PlantEvent::info(&format!(
+                    "Control room set to {generation:?}"
+                )));
+            }
+            Command::LoadScenario { name } => {
+                let Some(mut fresh) = Self::from_scenario(name) else {
+                    return deny("scenario must be hot_standby or full_power");
+                };
+                fresh.automation.game_mode = self.automation.game_mode;
+                fresh.automation.owned = self.automation.owned.clone();
+                fresh.control_room = self.control_room;
+                fresh
+                    .events
+                    .push(PlantEvent::info(&format!("Scenario loaded: {name}")));
+                *self = fresh;
+            }
         }
         Ok(())
+    }
+
+    fn close_breaker(&mut self) -> Result<(), Denied> {
+        if self.turbine_tripped {
+            return Err(Denied("turbine is tripped".into()));
+        }
+        let sync_check = self.sync_check_active();
+        let phase = self.tg.phase;
+        let slip = self.tg.slip_hz();
+        match self.tg.close(sync_check) {
+            CloseOutcome::Closed => {
+                self.events.push(PlantEvent::info(&format!(
+                    "Generator breaker closed (phase {phase:+.1}°, slip {slip:+.3} Hz)"
+                )));
+                Ok(())
+            }
+            CloseOutcome::Blocked { .. } => {
+                self.sync_block_until = self.time + 5.0;
+                let msg = format!(
+                    "Sync-check blocked breaker close: PHASE Δ OUT OF RANGE (phase {phase:+.0}°, slip {slip:+.2} Hz)"
+                );
+                self.events.push(PlantEvent::warn(&msg));
+                Err(Denied(msg))
+            }
+            CloseOutcome::Rough { damage, .. } => {
+                self.events.push(PlantEvent::warn(&format!(
+                    "Rough synchronization at {phase:+.0}°: generator stressed (−{damage:.1} % health)"
+                )));
+                if self.tg.lockout {
+                    self.events
+                        .push(PlantEvent::trip("Generator lockout relay 86G tripped"));
+                }
+                Ok(())
+            }
+            CloseOutcome::Tripped { damage, .. } => {
+                self.events.push(PlantEvent::trip(&format!(
+                    "Out-of-phase closure at {phase:+.0}°: generator differential trip (−{damage:.0} % health)"
+                )));
+                if self.tg.lockout {
+                    self.events
+                        .push(PlantEvent::trip("Generator lockout relay 86G tripped"));
+                }
+                self.trip_turbine();
+                Ok(())
+            }
+            CloseOutcome::Refused(why) => Err(Denied(why.into())),
+        }
     }
 
     fn check_actuator(&self, actuator: Actuator, origin: &Origin) -> Result<(), Denied> {
         let Some(owner) = modules::owner_of(actuator) else {
             return Ok(());
         };
+        // The breaker control switch stays live under the auto-synchronizer;
+        // closures are supervised by the sync-check relay instead.
+        if actuator == Actuator::GeneratorBreaker && *origin == Origin::Operator {
+            return Ok(());
+        }
         match (self.automation.mode(owner), origin) {
             (ModuleMode::Auto, _) => Err(Denied(format!(
                 "{owner:?} is in AUTO; switch it to MANUAL first"
@@ -989,11 +1481,26 @@ impl Pwr {
                     self.fw_ctl.track(self.feed, sf)
                 }
                 ModuleId::TurbineGovernor => {
-                    self.gov.track(self.turbine_valve, self.gross_mwe);
+                    if self.tg.breaker {
+                        self.gov.track(self.turbine_valve, self.gross_mwe);
+                        self.automation.setpoint_set(
+                            ModuleId::TurbineGovernor,
+                            "target_mwe",
+                            self.gross_mwe,
+                        );
+                    } else {
+                        let rpm = self.tg.rpm();
+                        self.gov.track_speed(self.turbine_valve, rpm);
+                        self.automation
+                            .setpoint_set(ModuleId::TurbineGovernor, "speed_rpm", rpm);
+                    }
+                }
+                ModuleId::Excitation => {
+                    self.avr.track(self.tg.excitation);
                     self.automation.setpoint_set(
-                        ModuleId::TurbineGovernor,
-                        "target_mwe",
-                        self.gross_mwe,
+                        ModuleId::Excitation,
+                        "voltage_kv",
+                        self.tg.grid_kv,
                     );
                 }
                 ModuleId::PlantMaster => {
@@ -1007,8 +1514,8 @@ impl Pwr {
             }
         }
         if mode != ModuleMode::Auto {
-            // Hold rods where they are.
             if module == ModuleId::RodControl {
+                self.rod_direction = RodDirection::Hold;
                 for b in &mut self.banks {
                     b.target = b.position;
                 }
@@ -1033,71 +1540,193 @@ impl Pwr {
 
     fn alarms(&self) -> Vec<Alarm> {
         let mut a = Vec::new();
-        let mut add = |tag: &str, text: &str, sev: Severity| {
+        let mut add = |panel: &str, tag: &str, text: &str, sev: Severity| {
             a.push(Alarm {
                 tag: tag.into(),
+                panel: panel.into(),
                 text: text.into(),
                 severity: sev,
             })
         };
-        if self.reactor_tripped {
-            add("rx_trip", "REACTOR TRIP", Severity::Trip);
-        }
-        if self.turbine_tripped {
-            add("turb_trip", "TURBINE TRIP", Severity::Alarm);
-        }
         let tavg = self.r("tavg_c");
-        if (tavg - self.tref()).abs() > 3.0 && !self.reactor_tripped {
-            add("tavg_dev", "Tavg / Tref deviation", Severity::Warning);
+        // Reactor / NIS
+        if self.reactor_tripped {
+            add("reactor", "rx_trip", "REACTOR TRIP", Severity::Trip);
+        }
+        if self.p6() {
+            add("reactor", "p6", "P-6 IR PERMISSIVE", Severity::Info);
+        }
+        if self.p10() {
+            add("reactor", "p10", "P-10 PR PERMISSIVE", Severity::Info);
+        }
+        if self.nis.sr_blocked {
+            add(
+                "reactor",
+                "sr_blocked",
+                "SR TRIP BLOCKED / HV OFF",
+                Severity::Info,
+            );
+        }
+        if self.nis.ir_blocked {
+            add("reactor", "ir_blocked", "IR TRIP BLOCKED", Severity::Info);
+        }
+        if self.nis.pr_low_blocked {
+            add(
+                "reactor",
+                "pr_low_blocked",
+                "PR LO SETPT TRIP BLOCKED",
+                Severity::Info,
+            );
+        }
+        if self.p6() && !self.nis.sr_blocked {
+            add(
+                "reactor",
+                "sr_block_permitted",
+                "SR BLOCK PERMITTED",
+                Severity::Warning,
+            );
+        }
+        if self.r("startup_rate_dpm") > 1.0 {
+            add("reactor", "sur", "HIGH STARTUP RATE", Severity::Warning);
+        }
+        if !self.reactor_tripped
+            && self.banks[5].position < 30.0
+            && self.banks[4].position < 128.0
+            && self.r("nuclear_power_pct") > 5.0
+        {
+            add("reactor", "rod_ins", "ROD INSERTION LIMIT", Severity::Alarm);
+        }
+        // RCS
+        if (tavg - self.tref()).abs() > 3.0 && !self.reactor_tripped && self.tg.breaker {
+            add(
+                "rcs",
+                "tavg_dev",
+                "TAVG / TREF DEVIATION",
+                Severity::Warning,
+            );
         }
         let p = self.r("rcs_pressure_mpa");
         if p > 15.9 {
-            add("p_high", "Pressurizer pressure high", Severity::Alarm);
+            add("rcs", "p_high", "PZR PRESS HIGH", Severity::Alarm);
         }
         if p < 15.1 {
-            add("p_low", "Pressurizer pressure low", Severity::Alarm);
+            add("rcs", "p_low", "PZR PRESS LOW", Severity::Alarm);
         }
         if self.porv_open {
-            add("porv", "PORV open", Severity::Alarm);
+            add("rcs", "porv", "PZR PORV OPEN", Severity::Alarm);
         }
         let lvl = self.r("pzr_level_pct");
         if (lvl - self.pzr_level_program(tavg)).abs() > 5.0 {
             add(
+                "rcs",
                 "pzr_lvl_dev",
-                "Pressurizer level deviation",
+                "PZR LEVEL DEVIATION",
                 Severity::Warning,
             );
         }
+        if self.rcp_running.iter().any(|r| !r) {
+            add("rcs", "rcp", "RCP STOPPED", Severity::Warning);
+        }
+        if self.r("rcs_flow_pct") < 92.0 {
+            add("rcs", "rcs_low_flow", "RCS LOW FLOW", Severity::Alarm);
+        }
+        // CVCS
+        match self.boration {
+            BorationMode::Borate => add("cvcs", "borating", "BORATION IN PROGRESS", Severity::Info),
+            BorationMode::Dilute => add("cvcs", "diluting", "DILUTION IN PROGRESS", Severity::Info),
+            BorationMode::Off => {}
+        }
+        if self.charging < 1.0 {
+            add(
+                "cvcs",
+                "charging_low",
+                "CHARGING FLOW LOW",
+                Severity::Warning,
+            );
+        }
+        // Steam & feed
         let sg = self.r("sg_level_pct");
         if !(38.0..=62.0).contains(&sg) {
-            add("sg_lvl_dev", "SG level deviation", Severity::Warning);
+            add(
+                "steam",
+                "sg_lvl_dev",
+                "SG LEVEL DEVIATION",
+                Severity::Warning,
+            );
         }
-        if self.r("startup_rate_dpm") > 1.0 {
-            add("sur", "High startup rate", Severity::Warning);
+        if sg < 20.0 {
+            add("steam", "sg_lvl_low", "SG LEVEL LOW", Severity::Alarm);
         }
-        if !self.reactor_tripped && self.banks[5].position < 30.0 && self.banks[4].position < 128.0
-        {
-            add("rod_ins", "Rod insertion limit", Severity::Alarm);
+        if self.steam_pressure() > SG_ARV {
+            add("steam", "sg_arv", "SG RELIEF VALVE OPEN", Severity::Alarm);
         }
-        if self.rcp_running.iter().any(|r| !r) {
-            add("rcp", "Reactor coolant pump stopped", Severity::Warning);
+        if self.steam_dump > 0.02 {
+            add("steam", "dump_open", "STEAM DUMP OPEN", Severity::Info);
         }
+        // Turbine-generator
+        if self.turbine_tripped {
+            add("turbine", "turb_trip", "TURBINE TRIP", Severity::Alarm);
+        }
+        if self.tg.speed > 1.03 {
+            add("turbine", "overspeed", "TURBINE OVERSPEED", Severity::Alarm);
+        }
+        if self.tg.lockout {
+            add("turbine", "gen_lockout", "GEN LOCKOUT 86G", Severity::Trip);
+        }
+        if self.tg.health < 90.0 {
+            add("turbine", "gen_damage", "GENERATOR DAMAGE", Severity::Alarm);
+        }
+        if !self.tg.field_breaker {
+            add(
+                "turbine",
+                "field_open",
+                "FIELD BREAKER OPEN",
+                Severity::Info,
+            );
+        }
+        if self.time < self.sync_block_until {
+            add(
+                "turbine",
+                "sync_blocked",
+                "PHASE Δ OUT OF RANGE",
+                Severity::Alarm,
+            );
+        }
+        if self.tg.breaker && self.tg.net_power < 0.0 {
+            add(
+                "turbine",
+                "reverse_power",
+                "GEN REVERSE POWER",
+                Severity::Alarm,
+            );
+        }
+        if !self.tg.breaker && self.tg.speed > 0.97 && !self.turbine_tripped {
+            add("turbine", "ready_sync", "READY TO SYNC", Severity::Info);
+        }
+        // Plant computer
         if self.training_mode {
             add(
+                "computer",
                 "training",
-                "TRAINING MODE: protection bypassed",
+                "TRAINING MODE: RPS BYPASSED",
                 Severity::Info,
             );
         }
         for (tag, s) in &self.sensors {
             if s.fault != SensorFault::None {
-                add(tag, &format!("Instrument fault: {tag}"), Severity::Warning);
+                add(
+                    "computer",
+                    tag,
+                    &format!("INSTRUMENT FAULT {tag}"),
+                    Severity::Warning,
+                );
             }
         }
         a
     }
 
     pub fn telemetry(&self, time_scale: f64, paused: bool) -> Telemetry {
+        let ctx = self.policy_context();
         Telemetry {
             api_version: API_VERSION,
             unit: self.name.clone(),
@@ -1122,8 +1751,23 @@ impl Pwr {
                     max_steps: b.max_steps,
                 })
                 .collect(),
+            rod_motion: format!("{}:{:?}", self.rod_selection, self.rod_direction).to_lowercase(),
             coolant_pumps: self.rcp_running.to_vec(),
-            generator_breaker: self.breaker,
+            generator_breaker: self.tg.breaker,
+            field_breaker: self.tg.field_breaker,
+            generator_lockout: self.tg.lockout,
+            sync_check_active: self.sync_check_active(),
+            sync_blocked: self.time < self.sync_block_until,
+            nis: NisView {
+                sr_blocked: self.nis.sr_blocked,
+                ir_blocked: self.nis.ir_blocked,
+                pr_low_blocked: self.nis.pr_low_blocked,
+                sr_hv_on: !self.nis.sr_blocked,
+                p6: self.p6(),
+                p10: self.p10(),
+            },
+            control_room: self.control_room,
+            scenario: self.scenario.clone(),
             boration: self.boration,
             reactor_tripped: self.reactor_tripped,
             turbine_tripped: self.turbine_tripped,
@@ -1136,7 +1780,7 @@ impl Pwr {
                     name: m.name.into(),
                     panel: m.panel.into(),
                     mode: self.automation.mode(m.id),
-                    owned: self.policy_context().owns(m.id),
+                    owned: ctx.owns(m.id),
                     implemented: m.implemented,
                     setpoints: self
                         .automation
@@ -1167,6 +1811,7 @@ impl Pwr {
         put("sg_mass_kg", self.sg_mass);
         put("decay_heat_pct", self.decay.power() * 100.0);
         put("period_s", self.kinetics.period);
+        put("relative_flux", self.kinetics.n);
         put("rho_rods_pcm", self.rho.rods * 1e5);
         put("rho_boron_pcm", self.rho.boron * 1e5);
         put("rho_doppler_pcm", self.rho.doppler * 1e5);
@@ -1174,6 +1819,7 @@ impl Pwr {
         put("rho_xenon_pcm", self.rho.xenon * 1e5);
         put("rho_samarium_pcm", self.rho.samarium * 1e5);
         put("q_sg_mw", self.q_sg / 1e6);
+        put("shaft_net_mw", self.tg.net_power / 1e6);
         m
     }
 

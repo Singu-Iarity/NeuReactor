@@ -9,9 +9,12 @@ use std::io::Read;
 use std::sync::Mutex;
 use tiny_http::{Header, Method, Request, Response};
 
-const INDEX: &str = include_str!("../../../web/index.html");
-const APP_JS: &str = include_str!("../../../web/app.js");
-const STYLE: &str = include_str!("../../../web/style.css");
+include!(concat!(env!("OUT_DIR"), "/web_files.rs"));
+
+fn web_file(path: &str) -> Option<(&'static str, &'static [u8])> {
+    let path = if path == "/" { "/index.html" } else { path };
+    WEB_FILES.iter().find(|f| f.0 == path).map(|f| (f.1, f.2))
+}
 
 fn header(k: &str, v: &str) -> Header {
     Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("valid header")
@@ -95,17 +98,21 @@ pub fn handle(mut req: Request, world: &Mutex<World>) {
     match (&method, path.as_str()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             let token = world.lock().unwrap().operator_token.clone();
+            let html = String::from_utf8_lossy(web_file("/").map(|f| f.1).unwrap_or_default());
             respond(
                 req,
                 200,
                 "text/html; charset=utf-8",
-                INDEX.replace("__OPERATOR_TOKEN__", &token),
+                html.replace("__OPERATOR_TOKEN__", &token),
             )
         }
-        (Method::Get, "/app.js") => {
-            respond(req, 200, "text/javascript; charset=utf-8", APP_JS.into())
+        (Method::Get, p) if !p.starts_with("/api/") && web_file(p).is_some() => {
+            let (mime, bytes) = web_file(p).unwrap();
+            let resp = Response::from_data(bytes.to_vec())
+                .with_header(header("Content-Type", mime))
+                .with_header(header("Cache-Control", "no-store"));
+            let _ = req.respond(resp);
         }
-        (Method::Get, "/style.css") => respond(req, 200, "text/css; charset=utf-8", STYLE.into()),
 
         (Method::Get, "/api/v1") => json_resp(
             req,

@@ -52,9 +52,9 @@ pub fn random_token() -> String {
 }
 
 impl World {
-    pub fn new() -> Self {
+    pub fn new(scenario: &str) -> Self {
         Self {
-            plant: Pwr::full_power(),
+            plant: Pwr::from_scenario(scenario).unwrap_or_else(Pwr::hot_standby),
             time_scale: 1.0,
             paused: false,
             operator_token: random_token(),

@@ -9,9 +9,11 @@ pub mod kinetics;
 pub mod poisons;
 pub mod rods;
 pub mod sensors;
+pub mod turbine_generator;
 
 pub use decay_heat::DecayHeat;
 pub use kinetics::{DelayedNeutronData, PointKinetics};
 pub use poisons::Poisons;
 pub use rods::RodBank;
 pub use sensors::{Sensor, SensorFault};
+pub use turbine_generator::{CloseOutcome, TurbineGenerator};

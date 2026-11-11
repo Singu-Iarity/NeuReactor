@@ -1,10 +1,18 @@
-//! Reactor protection system (trip logic).
+//! Reactor protection system (trip logic), Westinghouse-style PWR.
+//!
+//! Nuclear instrumentation trips follow the real startup sequence:
+//! source range high flux (blockable above P-6), intermediate range high
+//! flux and power range low setpoint (blockable above P-10), and the power
+//! range high setpoint which is always active.
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpsSetpoints {
-    pub high_flux_pct: f64,
+    pub sr_high_flux_cps: f64,
+    pub ir_high_flux_amps: f64,
+    pub pr_low_setpoint_pct: f64,
+    pub pr_high_setpoint_pct: f64,
     pub high_pressure_mpa: f64,
     pub low_pressure_mpa: f64,
     pub high_pzr_level_pct: f64,
@@ -15,13 +23,15 @@ pub struct RpsSetpoints {
     pub p7_pct: f64,
     /// P-9: turbine trip -> reactor trip above this power.
     pub p9_pct: f64,
-    pub high_startup_rate_dpm: f64,
 }
 
 impl Default for RpsSetpoints {
     fn default() -> Self {
         Self {
-            high_flux_pct: 109.0,
+            sr_high_flux_cps: 1.0e5,
+            ir_high_flux_amps: 2.0e-4,
+            pr_low_setpoint_pct: 25.0,
+            pr_high_setpoint_pct: 109.0,
             high_pressure_mpa: 16.55,
             low_pressure_mpa: 13.7,
             high_pzr_level_pct: 92.0,
@@ -30,7 +40,6 @@ impl Default for RpsSetpoints {
             over_temp_dt_pct: 115.0,
             p7_pct: 10.0,
             p9_pct: 50.0,
-            high_startup_rate_dpm: 5.0,
         }
     }
 }
@@ -38,13 +47,17 @@ impl Default for RpsSetpoints {
 /// Measured (instrument) values the RPS acts on.
 #[derive(Debug, Clone, Default)]
 pub struct RpsInputs {
+    pub sr_cps: f64,
+    pub ir_amps: f64,
     pub flux_pct: f64,
+    pub sr_blocked: bool,
+    pub ir_blocked: bool,
+    pub pr_low_blocked: bool,
     pub pressure_mpa: f64,
     pub pzr_level_pct: f64,
     pub flow_pct: f64,
     pub min_sg_level_pct: f64,
     pub delta_t_pct: f64,
-    pub startup_rate_dpm: f64,
     pub turbine_tripped: bool,
 }
 
@@ -59,11 +72,17 @@ impl Rps {
         let s = &self.setpoints;
         let mut trips = Vec::new();
         let at_power = i.flux_pct > s.p7_pct;
-        if i.flux_pct > s.high_flux_pct {
-            trips.push("Power range high flux");
+        if !i.sr_blocked && i.sr_cps > s.sr_high_flux_cps {
+            trips.push("Source range high flux");
         }
-        if i.startup_rate_dpm > s.high_startup_rate_dpm && i.flux_pct < s.p7_pct {
-            trips.push("High startup rate");
+        if !i.ir_blocked && i.ir_amps > s.ir_high_flux_amps {
+            trips.push("Intermediate range high flux");
+        }
+        if !i.pr_low_blocked && i.flux_pct > s.pr_low_setpoint_pct {
+            trips.push("Power range high flux (low setpoint)");
+        }
+        if i.flux_pct > s.pr_high_setpoint_pct {
+            trips.push("Power range high flux (high setpoint)");
         }
         if i.pressure_mpa > s.high_pressure_mpa {
             trips.push("Pressurizer pressure high");
@@ -96,13 +115,17 @@ mod tests {
 
     fn normal() -> RpsInputs {
         RpsInputs {
+            sr_cps: 0.0,
+            ir_amps: 8e-4,
             flux_pct: 100.0,
+            sr_blocked: true,
+            ir_blocked: true,
+            pr_low_blocked: true,
             pressure_mpa: 15.5,
             pzr_level_pct: 55.0,
             flow_pct: 100.0,
             min_sg_level_pct: 50.0,
             delta_t_pct: 100.0,
-            startup_rate_dpm: 0.0,
             turbine_tripped: false,
         }
     }
@@ -120,5 +143,22 @@ mod tests {
         assert_eq!(rps.evaluate(&i), vec!["RCS low flow"]);
         i.flux_pct = 5.0;
         assert!(rps.evaluate(&i).is_empty());
+    }
+
+    #[test]
+    fn unblocked_startup_trips() {
+        let rps = Rps::default();
+        let mut i = normal();
+        i.flux_pct = 30.0;
+        i.ir_amps = 1e-4;
+        i.pr_low_blocked = false;
+        assert_eq!(
+            rps.evaluate(&i),
+            vec!["Power range high flux (low setpoint)"]
+        );
+        i.pr_low_blocked = true;
+        i.sr_blocked = false;
+        i.sr_cps = 2e5;
+        assert_eq!(rps.evaluate(&i), vec!["Source range high flux"]);
     }
 }

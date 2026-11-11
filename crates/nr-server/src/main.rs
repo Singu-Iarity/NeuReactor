@@ -5,7 +5,7 @@
 //! * the versioned JSON API at `/api/v1/...` used by the UI and by plugins.
 //!
 //! ```text
-//! neureactor [--port 8642]
+//! neureactor [--port 8642] [--scenario hot_standby|full_power]
 //! ```
 
 mod api;
@@ -25,7 +25,13 @@ fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8642);
 
-    let world = Arc::new(Mutex::new(World::new()));
+    let scenario = args
+        .iter()
+        .position(|a| a == "--scenario")
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+        .unwrap_or("hot_standby");
+    let world = Arc::new(Mutex::new(World::new(scenario)));
 
     // Simulation thread: fixed physics step, paced against wall clock.
     {

@@ -53,7 +53,7 @@ fn scram_shuts_down_and_dumps_hold_no_load_tavg() {
     op(&mut p, Command::Scram);
     p.advance(10.0);
     assert!(p.kinetics.n < 0.08, "n after 10 s = {}", p.kinetics.n);
-    assert!(p.turbine_tripped && !p.breaker);
+    assert!(p.turbine_tripped);
     p.advance(1200.0);
     let tavg = p.tavg();
     assert!((tavg - 291.7).abs() < 4.0, "tavg {tavg}");

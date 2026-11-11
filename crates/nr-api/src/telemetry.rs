@@ -1,6 +1,6 @@
 //! Telemetry snapshot: what the control room shows.
 
-use crate::commands::BorationMode;
+use crate::commands::{BorationMode, ControlRoomGeneration};
 use crate::modules::{ModuleId, ModuleMode};
 use crate::policy::GameMode;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ pub enum Severity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Alarm {
     pub tag: String,
+    /// Control room panel / tab the annunciator window lives on.
+    pub panel: String,
     pub text: String,
     pub severity: Severity,
 }
@@ -28,6 +30,21 @@ pub struct RodView {
     pub position: f64,
     pub target: f64,
     pub max_steps: f64,
+}
+
+/// Nuclear instrumentation system status.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NisView {
+    /// Source range trip blocked (high voltage removed).
+    pub sr_blocked: bool,
+    pub ir_blocked: bool,
+    pub pr_low_blocked: bool,
+    /// Source range detector high voltage energised.
+    pub sr_hv_on: bool,
+    /// P-6: intermediate range above 1e-10 A (permits SR block).
+    pub p6: bool,
+    /// P-10: power range above 10 % (permits IR / PR-low block).
+    pub p10: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,8 +72,18 @@ pub struct Telemetry {
     /// Instrument readings by tag (see `docs/api/README.md` for the tag list).
     pub readings: BTreeMap<String, f64>,
     pub rods: Vec<RodView>,
+    pub rod_motion: String,
     pub coolant_pumps: Vec<bool>,
     pub generator_breaker: bool,
+    pub field_breaker: bool,
+    pub generator_lockout: bool,
+    /// Sync-check relay is supervising breaker closure.
+    pub sync_check_active: bool,
+    /// "PHASE Δ OUT OF RANGE" lamp (a close was just blocked).
+    pub sync_blocked: bool,
+    pub nis: NisView,
+    pub control_room: ControlRoomGeneration,
+    pub scenario: String,
     pub boration: BorationMode,
     pub reactor_tripped: bool,
     pub turbine_tripped: bool,

@@ -23,6 +23,7 @@ pub enum ModuleId {
     SteamDump,
     TurbineGovernor,
     GeneratorSync,
+    Excitation,
     DieselSequencer,
     AuxFeedAutoStart,
     PlantMaster,
@@ -63,7 +64,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::RodControl,
         name: "Automatic Rod Control",
-        panel: "Reactivity",
+        panel: "Reactor",
         description: "Drives control banks with overlap to hold average coolant temperature on the Tavg program.",
         price: 4_500_000,
         prerequisites: &[],
@@ -83,7 +84,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::PressurizerPressure,
         name: "Pressurizer Pressure Control",
-        panel: "Primary",
+        panel: "RCS",
         description: "Proportional and backup heaters plus spray valves hold RCS pressure at setpoint.",
         price: 1_500_000,
         prerequisites: &[],
@@ -103,7 +104,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::RcpSequencer,
         name: "RCP Start Sequencer",
-        panel: "Primary",
+        panel: "RCS",
         description: "Starts and stops reactor coolant pumps in the correct order with interlock checks.",
         price: 800_000,
         prerequisites: &[],
@@ -113,7 +114,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::FeedwaterLevel,
         name: "SG Feedwater Level Control",
-        panel: "Secondary",
+        panel: "Steam & Feed",
         description: "Three-element (level, steam flow, feed flow) control of steam generator level.",
         price: 2_500_000,
         prerequisites: &[],
@@ -123,7 +124,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::Deaerator,
         name: "Deaerator Control",
-        panel: "Secondary",
+        panel: "Steam & Feed",
         description: "Holds deaerator level and pegging-steam pressure.",
         price: 900_000,
         prerequisites: &[],
@@ -133,7 +134,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::CondenserVacuum,
         name: "Condenser Vacuum & Hotwell Control",
-        panel: "Secondary",
+        panel: "Steam & Feed",
         description: "Air ejectors, vacuum pumps and hotwell makeup/reject.",
         price: 1_000_000,
         prerequisites: &[],
@@ -143,7 +144,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::SteamDump,
         name: "Steam Dump Control",
-        panel: "Secondary",
+        panel: "Steam & Feed",
         description: "Load-rejection and plant-trip steam dump to the condenser; holds no-load Tavg after a trip.",
         price: 1_300_000,
         prerequisites: &[],
@@ -153,7 +154,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::TurbineGovernor,
         name: "Turbine Load Governor",
-        panel: "Turbine",
+        panel: "Turbine-Generator",
         description: "Ramps governor valves to a target electrical load at a set rate.",
         price: 3_000_000,
         prerequisites: &[],
@@ -162,12 +163,22 @@ pub const CATALOG: &[ModuleInfo] = &[
     },
     ModuleInfo {
         id: M::GeneratorSync,
-        name: "Generator Auto-Synchronizer",
-        panel: "Electrical",
-        description: "Matches frequency/phase and closes the main generator breaker.",
+        name: "Sync-Check Relay & Auto-Synchronizer",
+        panel: "Turbine-Generator",
+        description: "In AUTO: blocks out-of-phase breaker closure (sync-check) and automatically matches speed and closes the generator breaker.",
         price: 700_000,
         prerequisites: &[],
         actuators: &[A::GeneratorBreaker],
+        implemented: true,
+    },
+    ModuleInfo {
+        id: M::Excitation,
+        name: "Automatic Voltage Regulator",
+        panel: "Turbine-Generator",
+        description: "Holds generator terminal voltage by trimming excitation.",
+        price: 600_000,
+        prerequisites: &[],
+        actuators: &[A::Exciter],
         implemented: true,
     },
     ModuleInfo {
@@ -183,7 +194,7 @@ pub const CATALOG: &[ModuleInfo] = &[
     ModuleInfo {
         id: M::AuxFeedAutoStart,
         name: "Auxiliary Feedwater Auto-Start",
-        panel: "Secondary",
+        panel: "Steam & Feed",
         description: "Starts auxiliary feed pumps on low-low SG level or loss of main feed.",
         price: 1_100_000,
         prerequisites: &[],

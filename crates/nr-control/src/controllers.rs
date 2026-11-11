@@ -196,34 +196,117 @@ impl SteamDumpControl {
     }
 }
 
-/// Turbine governor: ramps a load reference toward the target and trims the
-/// governor valve on electrical output.
+/// Turbine governor. With the generator breaker open it is a speed
+/// controller (ramping a speed reference at the selected acceleration);
+/// with the breaker closed it ramps a load reference and trims the governor
+/// valves on electrical output.
 #[derive(Debug, Clone)]
 pub struct TurbineGovernor {
     pub load_ref: f64,
-    pi: Pi,
+    pub speed_ref: f64,
+    load_pi: Pi,
+    speed_pi: Pi,
 }
 
 impl Default for TurbineGovernor {
     fn default() -> Self {
         Self {
             load_ref: 0.0,
-            pi: Pi::new(0.0005, 0.0005, 0.0, 1.0),
+            speed_ref: 0.0,
+            load_pi: Pi::new(0.0005, 0.0005, 0.0, 1.0),
+            speed_pi: Pi::new(0.0005, 0.00005, 0.0, 0.15),
         }
     }
 }
 
 impl TurbineGovernor {
-    /// Returns governor valve demand 0..1.
+    /// Load control. Returns governor valve demand 0..1.
     pub fn update(&mut self, target_mwe: f64, ramp_mw_min: f64, mwe: f64, dt: f64) -> f64 {
         let max = ramp_mw_min / 60.0 * dt;
         self.load_ref += clamp(target_mwe - self.load_ref, -max, max);
-        self.pi.update(self.load_ref - mwe, dt)
+        self.load_pi.update(self.load_ref - mwe, dt)
+    }
+
+    /// Speed control. Returns governor valve demand 0..1.
+    pub fn update_speed(&mut self, target_rpm: f64, accel_rpm_min: f64, rpm: f64, dt: f64) -> f64 {
+        let max = accel_rpm_min / 60.0 * dt;
+        self.speed_ref += clamp(target_rpm - self.speed_ref, -max, max);
+        self.speed_pi.update(self.speed_ref - rpm, dt)
     }
 
     pub fn track(&mut self, valve: f64, mwe: f64) {
         self.load_ref = mwe;
-        self.pi.track(valve);
+        self.load_pi.track(valve);
+    }
+
+    pub fn track_speed(&mut self, valve: f64, rpm: f64) {
+        self.speed_ref = rpm;
+        self.speed_pi.track(valve.min(0.15));
+    }
+}
+
+/// Automatic voltage regulator: trims excitation to hold terminal voltage.
+#[derive(Debug, Clone)]
+pub struct Avr {
+    pi: Pi,
+}
+
+impl Default for Avr {
+    fn default() -> Self {
+        Self {
+            pi: Pi::new(0.005, 0.02, 0.0, 1.0),
+        }
+    }
+}
+
+impl Avr {
+    pub fn update(&mut self, target_kv: f64, kv: f64, dt: f64) -> f64 {
+        self.pi.update(target_kv - kv, dt)
+    }
+
+    pub fn track(&mut self, excitation: f64) {
+        self.pi.track(excitation);
+    }
+}
+
+/// What the auto-synchronizer wants this step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SyncAction {
+    /// Governor speed setpoint [rpm] (generator slightly fast).
+    pub speed_rpm: f64,
+    /// Voltage target for the AVR [kV].
+    pub voltage_kv: f64,
+    /// Issue the breaker close now.
+    pub close: bool,
+}
+
+/// Auto-synchronizer: runs the generator slightly fast of grid frequency,
+/// matches voltage and closes the breaker just before the phase crosses zero.
+#[derive(Debug, Clone, Default)]
+pub struct AutoSynchronizer;
+
+impl AutoSynchronizer {
+    pub const SLIP_TARGET_HZ: f64 = 0.04;
+
+    pub fn update(
+        &self,
+        grid_hz: f64,
+        grid_kv: f64,
+        gen_kv: f64,
+        phase_deg: f64,
+        slip_hz: f64,
+    ) -> SyncAction {
+        let speed_rpm = (grid_hz + Self::SLIP_TARGET_HZ) / 60.0 * 1800.0;
+        let dv_ok = (gen_kv - grid_kv).abs() / grid_kv < 0.03;
+        let slip_ok = slip_hz > 0.005 && slip_hz < 0.08;
+        // Generator fast => phase increases; close as it approaches 0 from below
+        // (breaker closing time lead).
+        let close = dv_ok && slip_ok && (-6.0..=1.0).contains(&phase_deg);
+        SyncAction {
+            speed_rpm,
+            voltage_kv: grid_kv,
+            close,
+        }
     }
 }
 
@@ -245,24 +328,6 @@ impl BoronControl {
             s => s,
         };
         self.state
-    }
-}
-
-/// Generator auto-synchronizer: closes the breaker after a sync delay once
-/// the turbine is rolling.
-#[derive(Debug, Clone, Default)]
-pub struct GeneratorSync {
-    timer: f64,
-}
-
-impl GeneratorSync {
-    pub fn update(&mut self, rolling: bool, dt: f64) -> bool {
-        if rolling {
-            self.timer += dt;
-        } else {
-            self.timer = 0.0;
-        }
-        self.timer > 10.0
     }
 }
 

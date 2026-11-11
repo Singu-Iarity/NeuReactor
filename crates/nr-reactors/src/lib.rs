@@ -12,3 +12,6 @@ pub use pwr::Pwr;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_startup;

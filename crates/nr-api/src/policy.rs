@@ -146,12 +146,12 @@ pub fn authorize(cmd: &Command, origin: &Origin, ctx: &PolicyContext) -> Result<
     match kind {
         CommandKind::Sim => need(Scope::SimControl),
         CommandKind::Scenario => need(Scope::ScenarioWrite),
-        // Tripping the reactor is always a safe action.
-        CommandKind::Scram => need(Scope::ControlWrite),
-        CommandKind::ResetTrip => {
+        // Tripping the reactor or turbine is always a safe action.
+        CommandKind::Trip => need(Scope::ControlWrite),
+        CommandKind::Reset => {
             need(Scope::ControlWrite)?;
             if career {
-                return deny("only the operator can reset a reactor trip in career mode");
+                return deny("only the operator can reset a trip in career mode");
             }
             Ok(())
         }
@@ -269,6 +269,24 @@ mod tests {
         let cmd = Command::SetTrainingMode { enabled: true };
         assert!(authorize(&cmd, &p, &ctx).is_err());
         assert!(authorize(&cmd, &Origin::Operator, &ctx).is_err());
+    }
+
+    #[test]
+    fn career_blocks_repairs_and_control_room_swaps() {
+        let p = plugin(&[Scope::ScenarioWrite, Scope::ControlWrite]);
+        let ctx = career(&[], &[]);
+        assert!(authorize(&Command::RepairGenerator, &p, &ctx).is_err());
+        let cr = Command::SetControlRoom {
+            generation: crate::ControlRoomGeneration::Digital,
+        };
+        assert!(authorize(&cr, &p, &ctx).is_err());
+        // NIS blocks have no automation module: operator only in career.
+        let nis = Command::BlockNis {
+            channel: crate::NisBlock::SourceRange,
+            blocked: true,
+        };
+        assert!(authorize(&nis, &p, &ctx).is_err());
+        assert!(authorize(&nis, &Origin::Operator, &ctx).is_ok());
     }
 
     #[test]
