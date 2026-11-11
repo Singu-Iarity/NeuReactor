@@ -469,9 +469,49 @@ export function maStation(title, cfg, ctx) {
     }
   };
   const rl = springSwitch("", { lo: "▼", hi: "▲", onHold: nudge, repeat: 250 });
+
+  // Analog controller face (1970s-80s panel station): vertical scale with a
+  // black process pointer and red setpoint pointer, horizontal output meter
+  // and a mechanical setpoint drum.
+  const hasScale = !!cfg.pvTag;
+  const aPv = h("div", { class: "va-ptr pv" }), aSp = h("div", { class: "va-ptr sp" });
+  const ticks = h("div", { class: "va-ticks" });
+  const aScale = h("div", { class: "va-scale" }, ticks, aPv, aSp);
+  const aOut = h("div", { class: "ha-ptr" });
+  const drum = h("div", { class: "drum" }, "----");
+  const setAPv = tween(x => { aPv.style.bottom = `${x}%`; });
+  const setASp = tween(x => { aSp.style.bottom = `${x}%`; });
+  const setAOut = tween(x => { aOut.style.left = `${x}%`; });
+  let range = null, rangeKey = "";
+  const analogFace = h("div", { class: "ma-analog only-analog" },
+    hasScale ? h("div", { class: "va-wrap" }, aScale, h("div", { class: "va-labels" }, h("span", { class: "pvl" }, "PV ▶"), h("span", { class: "spl" }, "◀ SP"))) : null,
+    h("div", { class: "va-side" },
+      cfg.spKey || cfg.spTag ? h("div", { class: "drum-wrap" }, h("div", { class: "drum-label" }, "SETPOINT"), drum) : null,
+      cfg.outTag ? h("div", { class: "ha-wrap" }, h("div", { class: "drum-label" }, "OUTPUT %"), h("div", { class: "ha-scale" }, h("div", { class: "ha-ticks" }), aOut)) : null));
+  function scaleFor(t, pvV, spV) {
+    const r = typeof cfg.range === "function" ? cfg.range(t) : cfg.range;
+    if (r) return r;
+    const key = `${pick(cfg.pvTag, t)}`;
+    if (!range || rangeKey !== key) {
+      const c = spV ?? pvV ?? 0;
+      const span = Math.max((cfg.devSpan ?? 1) * 4, Math.abs(c) * 0.2, 1);
+      range = [c - span, c + span];
+      rangeKey = key;
+    }
+    return range;
+  }
+  function drawTicks(r) {
+    const k = `${r[0]}:${r[1]}`;
+    if (ticks.dataset.k === k) return;
+    ticks.dataset.k = k;
+    ticks.replaceChildren(...[0, 1, 2, 3, 4].map(i => h("div", { class: "va-tick", style: `bottom:${i * 25}%` },
+      h("span", {}, `${+(r[0] + (r[1] - r[0]) * i / 4).toFixed(Math.abs(r[1] - r[0]) < 5 ? 2 : 0)}`))));
+  }
+
   const el = h("div", { class: "ma-station" },
     h("div", { class: "ma-title" }, title),
-    h("div", { class: "ma-rows" },
+    analogFace,
+    h("div", { class: "ma-rows only-digital" },
       cfg.pvTag ? h("div", { class: "ma-row" }, h("label", {}, "PV"), h("div", { class: "seg mini" }, pv)) : null,
       cfg.spKey || cfg.spTag ? h("div", { class: "ma-row" }, h("label", {}, "SP"), h("div", { class: "seg mini sp" }, sp)) : null,
       cfg.pvTag && (cfg.spKey || cfg.spTag) ? h("div", { class: "ma-dev" }, devPtr) : null,
@@ -497,6 +537,16 @@ export function maStation(title, cfg, ctx) {
         setOut(Math.max(0, Math.min(100, (o - (cfg.outMin ?? 0)) / ((cfg.outMax ?? 100) - (cfg.outMin ?? 0)) * 100)));
         outNum.textContent = o.toFixed(cfg.outDigits ?? 0);
       }
+      if (hasScale) {
+        const r = scaleFor(t, pvV, spV);
+        drawTicks(r);
+        const frac = v => Math.max(-2, Math.min(102, (v - r[0]) / (r[1] - r[0]) * 100));
+        if (pvV !== undefined) setAPv(frac(pvV));
+        if (spV !== undefined) setASp(frac(spV));
+        aSp.style.display = spV === undefined ? "none" : "";
+      }
+      drum.textContent = spV === undefined ? "----" : fmt(spV, cfg.digits ?? 1);
+      if (o !== undefined) setAOut(Math.max(0, Math.min(100, (o - (cfg.outMin ?? 0)) / ((cfg.outMax ?? 100) - (cfg.outMin ?? 0)) * 100)));
       mBtn.classList.toggle("lit", mode === "manual");
       aBtn.classList.toggle("lit", mode === "auto");
       el.classList.toggle("ext", mode === "external");

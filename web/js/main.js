@@ -5,6 +5,7 @@ import { h, annunciatorPanel, animate } from "./widgets.js";
 import * as ann from "./annunciator.js";
 import * as sound from "./sound.js";
 import { settings } from "./settings.js";
+import { clipboard } from "./procedures.js";
 import * as reactor from "./panels/reactor.js";
 import * as rcs from "./panels/rcs.js";
 import * as cvcs from "./panels/cvcs.js";
@@ -114,7 +115,8 @@ for (const P of PANELS) {
       h("button", { class: "pb-round red", onclick: () => ann.acknowledge(P.id), title: "Acknowledge this panel" }, "ACK"),
       h("button", { class: "pb-round white", onclick: () => ann.reset(P.id), title: "Reset cleared alarms" }, "RST")));
   }
-  const section = h("section", { class: "panel", id: `panel-${P.id}` }, head, body);
+  const section = h("section", { class: "panel", id: `panel-${P.id}` }, head, body,
+    h("div", { class: "clipboard-rail" }, clipboard(P.id, () => telemetry)));
   roomEl.append(section);
   renderers.set(P.id, P.build(body, ctx));
 }
