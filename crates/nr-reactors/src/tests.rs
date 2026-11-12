@@ -266,3 +266,24 @@ fn loss_of_offsite_power_without_diesels_drains_battery() {
     assert!(p.elec.battery_pct < 100.0);
     assert!(p.alarms_for_test().iter().any(|a| a == "batt_discharge"));
 }
+
+#[test]
+fn core_exit_thermocouples_track_power_and_rods() {
+    let p = Pwr::full_power();
+    let t = p.core_exit_temps();
+    assert_eq!(t.len(), 193);
+    let avg = t.iter().sum::<f64>() / t.len() as f64;
+    assert!((avg - p.t_hot).abs() < 1.0, "avg {avg} vs thot {}", p.t_hot);
+    let max = t.iter().cloned().fold(f64::MIN, f64::max);
+    let min = t.iter().cloned().fold(f64::MAX, f64::min);
+    eprintln!(
+        "full power CET avg {avg:.1} min {min:.1} max {max:.1} thot {:.1} tcold {:.1}",
+        p.t_hot, p.t_cold
+    );
+    assert!(max > avg + 5.0 && min < avg - 5.0);
+    let s = Pwr::hot_standby();
+    let ts = s.core_exit_temps();
+    let spread =
+        ts.iter().cloned().fold(f64::MIN, f64::max) - ts.iter().cloned().fold(f64::MAX, f64::min);
+    assert!(spread < 3.0, "no power, flat core exit temps ({spread})");
+}

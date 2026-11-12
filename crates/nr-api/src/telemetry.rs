@@ -118,6 +118,10 @@ pub struct Telemetry {
     pub sync_check_active: bool,
     /// "PHASE Δ OUT OF RANGE" lamp (a close was just blocked).
     pub sync_blocked: bool,
+    /// Core exit thermocouple of every fuel assembly, row-major on the 15×15
+    /// core (empty without the Core Exit Thermocouple Map upgrade).
+    #[serde(default)]
+    pub core_exit_temps: Vec<f64>,
     pub nis: NisView,
     /// Generation of every control board section that an upgrade can
     /// modernise (`"turbine.sync" -> digital`). Sections not listed are analog.

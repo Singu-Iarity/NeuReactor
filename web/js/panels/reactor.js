@@ -91,6 +91,17 @@ export function build(root, ctx) {
 
   const msg = messagingTerminal(ctx);
 
+  // ---- core temperatures (core exit thermocouples)
+  let mapMode = "rods";
+  const mapSel = selector("CORE MAP DISPLAY", [{ label: "ROD POS", value: "rods" }, { label: "CORE EXIT °C", value: "temps" }], v => { mapMode = v; });
+  const cetAvg = edgewise("CORE EXIT AVG", { min: 280, max: 345, unit: "°C", major: 13, digits: 1, bands: [{ from: 335, to: 345, c: "red" }] });
+  const cetMax = edgewise("CORE EXIT HOTTEST", { min: 280, max: 345, unit: "°C", major: 13, digits: 1, bands: [{ from: 335, to: 345, c: "red" }] });
+  const fuelAvg = readout("FUEL AVG [°C] (CALC)", { digits: 0 });
+  const quad = [1, 2, 3, 4].map(q => readout(`QUADRANT ${q} [°C]`, { digits: 1 }));
+  const BANKS = ["a", "b", "c", "d", "sa", "sb"];
+  const bankT = BANKS.map(b => readout(`BANK ${b.toUpperCase()} AREA [°C]`, { digits: 1 }));
+  const cetNote = h("p", { class: "note" }, "");
+
   // ---- first out
   const fo = h("div", { class: "firstout" }, ...FIRST_OUT.map(n => h("div", { class: "fo-win", "data-trip": n }, n.toUpperCase())));
 
@@ -112,6 +123,12 @@ export function build(root, ctx) {
         h("p", { class: "note" }, "Holds reactor power at a setpoint (rod control must be in AUTO). ROD: rods follow the setpoint, startup rate limited. BORON: dilute/borate with rods parked. COORD: rods for fast changes, boron returns the lead bank to its band. Analog cabinets: ROD only."),
         h("div", { class: "row" }, rpcMa.el, h("div", { class: "col" }, rpcMode.el, rpcRamp.el, pref.el))),
       h("section", { class: "sect", "data-section": "reactor.firstout" }, plate("REACTOR TRIP FIRST OUT"), fo),
+      h("section", { class: "sect", "data-section": "reactor.nis" }, plate("CORE EXIT TEMPERATURES"),
+        h("div", { class: "row" }, cetAvg.el, cetMax.el,
+          h("div", { class: "col" }, ...quad.map(q => q.el)),
+          h("div", { class: "col" }, ...bankT.map(b => b.el)),
+          h("div", { class: "col" }, fuelAvg.el, mapSel.el)),
+        cetNote),
       msg.el));
 
   return t => {
@@ -136,6 +153,18 @@ export function build(root, ctx) {
     mwt.update(R.thermal_power_mw);
     t.rods.forEach((r, i) => bars[i].update(r.position, r.target));
     core.update(t.rods, selection);
+    const hasMap = t.core_exit_temps?.length > 0;
+    if (!hasMap) mapMode = "rods";
+    mapSel.update(mapMode, !hasMap);
+    core.showTemps(mapMode === "temps" ? t.core_exit_temps : null);
+    cetAvg.update(R.cet_avg_c);
+    cetMax.update(R.cet_max_c);
+    fuelAvg.update(R.fuel_avg_c);
+    quad.forEach((q, i) => q.update(R[`cet_q${i + 1}_c`]));
+    bankT.forEach((b, i) => b.update(R[`cet_bank_${BANKS[i]}_c`]));
+    cetNote.textContent = hasMap
+      ? "Core exit thermocouples above every fuel assembly; switch the core map to CORE EXIT °C to see each one. Assemblies under inserted rods run cooler."
+      : "Averages only. Buy the Core Exit Thermocouple Map (Equipment tab) to read every assembly on the core map. Bank areas: average of the assemblies containing that bank's rods; they run cooler while the bank is inserted.";
     rpcMa.update(t);
     const rpc = t.modules.find(m => m.id === "reactor_power");
     rpcMode.update(rpc?.setpoints.mode);

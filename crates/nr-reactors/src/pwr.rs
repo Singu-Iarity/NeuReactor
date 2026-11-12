@@ -159,6 +159,19 @@ const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
     ("tref_c", 0.0, 0.0, (0.0, 400.0)),
     ("thot_c", 2.0, 0.05, (0.0, 400.0)),
     ("tcold_c", 2.0, 0.05, (0.0, 400.0)),
+    ("cet_avg_c", 3.0, 0.1, (0.0, 1200.0)),
+    ("cet_max_c", 3.0, 0.1, (0.0, 1200.0)),
+    ("cet_q1_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_q2_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_q3_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_q4_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_bank_a_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_bank_b_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_bank_c_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_bank_d_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_bank_sa_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("cet_bank_sb_c", 3.0, 0.15, (0.0, 1200.0)),
+    ("fuel_avg_c", 5.0, 0.3, (0.0, 2800.0)),
     ("delta_t_pct", 2.0, 0.2, (0.0, 150.0)),
     ("rcs_pressure_mpa", 0.3, 0.005, (0.0, 20.0)),
     ("pzr_level_pct", 1.0, 0.2, (0.0, 100.0)),
@@ -1160,6 +1173,38 @@ impl Pwr {
         m.insert("tref_c", self.tref());
         m.insert("thot_c", self.t_hot);
         m.insert("tcold_c", self.t_cold);
+        // Core exit thermocouples: average, hottest, by quadrant and by the
+        // assemblies under each rod bank.
+        let cet = self.core_exit_temps();
+        let core = crate::core_map::core();
+        let avg = |f: &dyn Fn(&crate::core_map::Assembly) -> bool| {
+            let v: Vec<f64> = core
+                .iter()
+                .zip(&cet)
+                .filter(|(a, _)| f(a))
+                .map(|(_, t)| *t)
+                .collect();
+            v.iter().sum::<f64>() / v.len().max(1) as f64
+        };
+        m.insert("cet_avg_c", avg(&|_| true));
+        m.insert("cet_max_c", cet.iter().cloned().fold(f64::MIN, f64::max));
+        for (q, tag) in ["cet_q1_c", "cet_q2_c", "cet_q3_c", "cet_q4_c"]
+            .into_iter()
+            .enumerate()
+        {
+            m.insert(tag, avg(&|a| a.quadrant == q));
+        }
+        for (bank, tag) in [
+            ("A", "cet_bank_a_c"),
+            ("B", "cet_bank_b_c"),
+            ("C", "cet_bank_c_c"),
+            ("D", "cet_bank_d_c"),
+            ("SA", "cet_bank_sa_c"),
+            ("SB", "cet_bank_sb_c"),
+        ] {
+            m.insert(tag, avg(&|a| a.rcca.map(|r| r.0) == Some(bank)));
+        }
+        m.insert("fuel_avg_c", self.t_fuel);
         m.insert("delta_t_pct", dt_core / dt_full * 100.0);
         m.insert("rcs_pressure_mpa", self.pressure / MPA);
         m.insert("pzr_level_pct", self.pzr_level());
@@ -1252,6 +1297,13 @@ impl Pwr {
             }
             self.readings.insert(tag, v);
         }
+    }
+
+    /// True core exit temperature of every assembly (row-major) [°C].
+    pub fn core_exit_temps(&self) -> Vec<f64> {
+        let core = crate::core_map::core();
+        let power = crate::core_map::assembly_power(core, &self.banks, self.quadrant_tilt());
+        crate::core_map::exit_temps(core, &power, self.t_cold, self.t_hot)
     }
 
     fn r(&self, tag: &str) -> f64 {
@@ -2802,6 +2854,18 @@ impl Pwr {
             generator_lockout: self.tg.lockout,
             sync_check_active: self.sync_check_active(),
             sync_blocked: self.time < self.sync_block_until,
+            core_exit_temps: if self
+                .automation
+                .upgrades
+                .contains(&UpgradeId::CoreExitThermocoupleMap)
+            {
+                self.core_exit_temps()
+                    .into_iter()
+                    .map(|t| (t * 10.0).round() / 10.0)
+                    .collect()
+            } else {
+                Vec::new()
+            },
             nis: NisView {
                 sr_blocked: self.nis.sr_blocked,
                 ir_blocked: self.nis.ir_blocked,

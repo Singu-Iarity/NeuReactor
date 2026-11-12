@@ -180,6 +180,11 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
   Motor-start inrush can overload and lock out the startup transformer; bus B
   needs the generator or the A-B tie; dead buses stop their loads; loss of DC
   trips the reactor; the anti-motoring relay opens a motoring generator.
+- Core exit thermocouples above all 193 fuel assemblies: radial power shape,
+  cooler under inserted rods, quadrant tilt. The board shows core average,
+  hottest, per-quadrant and per-rod-bank-area averages plus calculated fuel
+  average; the Core Exit Thermocouple Map upgrade shows every assembly on
+  the core map
 - Plant messaging terminal on the reactor board, by installed equipment:
   vintage lamp message panel (lit caller windows, press to read/acknowledge),
   dated green-screen CRT terminal with side pushbuttons and function-key

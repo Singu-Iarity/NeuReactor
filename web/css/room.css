@@ -608,3 +608,9 @@ body.bf .mp-win.flash { background: #3a3424; color: #6f6650; box-shadow: none; }
 .hmi-btn:hover { background: #fff; border-color: #3d5a80; }
 .hmi-btn.primary { background: #3d5a80; color: #fff; }
 .hmi-btn.small { padding: 1px 6px; font-size: 10px; }
+
+/* core exit thermocouple map */
+.core-cell .cet-num { display: none; }
+.core-grid.temps .core-cell:not(.empty) { background: var(--cet, #444) !important; }
+.core-grid.temps .core-cell .cet-num { display: block; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 700 8px var(--mono); color: #fff; text-shadow: 0 0 2px #000; }
+.core-grid.temps .selsyn, .core-grid.temps .rod-num, .core-grid.temps .rod-tag { visibility: hidden; }

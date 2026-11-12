@@ -37,6 +37,7 @@ pub enum UpgradeId {
     DigitalElectricalControls,
     MessageTerminal,
     MessagingHmi,
+    CoreExitThermocoupleMap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +179,7 @@ pub const CATALOG: &[UpgradeInfo] = &[
     DIGITAL_ELECTRICAL,
     MESSAGE_TERMINAL,
     MESSAGING_HMI,
+    CORE_EXIT_TC_MAP,
 ];
 
 /// Board hardware entries appended to the catalog.
@@ -240,6 +242,16 @@ pub const MESSAGING_HMI: UpgradeInfo = UpgradeInfo {
     description: "Networked messaging workstation with keyboard and mouse: type free-text requests to the plant and dispatch.",
     price: 900_000,
     sections: &["reactor.messages"],
+};
+
+pub const CORE_EXIT_TC_MAP: UpgradeInfo = UpgradeInfo {
+    id: U::CoreExitThermocoupleMap,
+    kind: UpgradeKind::BoardHardware,
+    computer: None,
+    name: "Core Exit Thermocouple Map",
+    description: "Individual core exit thermocouple readout for every fuel assembly, shown on the core map. Without it only averages (core, quadrant, rod bank) are indicated.",
+    price: 450_000,
+    sections: &[],
 };
 
 pub fn info(id: UpgradeId) -> &'static UpgradeInfo {

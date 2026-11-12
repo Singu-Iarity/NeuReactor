@@ -4,6 +4,7 @@
 //! plants will be added here, assembled from the same `nr-physics`
 //! components and `nr-control` modules.
 
+pub mod core_map;
 pub mod plant;
 pub mod pwr;
 
