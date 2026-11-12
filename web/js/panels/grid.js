@@ -45,6 +45,24 @@ export function build(root, ctx) {
     ctx.pollStation();
   };
   const changeBox = h("div", { class: "row tight" }, changeMw, h("button", { class: "btn", onclick: requestChange }, "REQUEST CHANGE"));
+  // Base-load block: hold a fixed output for hours or days.
+  const blMw = h("input", { class: "save-name", type: "number", min: 0, step: 25, style: "width:90px", title: "Base-load output [MWe net] (blank = current commitment)" });
+  blMw.addEventListener("keydown", e => e.stopPropagation());
+  const blHours = h("select", { class: "hmi-dest" }, ...[[12, "12 h"], [24, "24 h"], [72, "3 days"], [168, "1 week"]].map(([v, l]) => h("option", { value: v }, l)));
+  blHours.value = "24";
+  const blStatus = h("div", { class: "card-sub" }, "");
+  const requestBaseload = async () => {
+    play("pickup");
+    const body = { hours: +blHours.value };
+    if (+blMw.value > 0) body.target_mwe = +blMw.value;
+    const r = await api("/station/baseload", body);
+    if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
+    ctx.pollStation();
+  };
+  const cancelBaseload = async () => { await api("/station/baseload", { cancel: true }); ctx.pollStation(); };
+  const baseBox = h("div", {}, h("div", { class: "row tight" }, blMw, blHours,
+    h("button", { class: "btn", onclick: requestBaseload }, "REQUEST BASE-LOAD"),
+    h("button", { class: "btn", onclick: cancelBaseload }, "CANCEL")), blStatus);
   const agc = pushbutton("AGC", { onPress: async () => {
     const r = await api("/station/agc", { on: !ctx.station()?.agc });
     if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
@@ -105,6 +123,8 @@ export function build(root, ctx) {
         h("div", { class: "col" }, demand.el, net.el), h("div", { class: "col" }, gross.el, freq.el),
         h("div", { class: "col" }, plate("DISPATCH INSTRUCTION", "small"), request, h("div", { class: "row tight" }, accept.el, agc.el), perf,
           plate("ASK DISPATCH FOR A NEW COMMITMENT", "small"), changeBox,
+          plate("BASE-LOAD BLOCK", "small"), baseBox,
+          h("p", { class: "note" }, "Base-load: hold a fixed output for hours or days with no load-following requests. Paid at 92 % of the price while on target (no flexibility premium)."),
           h("p", { class: "note" }, "Below your commitment = derate: usually approved, you pay replacement power (an hour of the shortfall at market price). Above = offer more: taken only when the system needs it, with a capacity premium on the extra output; capped at what your unit can make.")))),
     h("section", { class: "sect wide", "data-section": "grid.station" }, plate("EARNINGS"),
       h("div", { class: "row" },
@@ -186,6 +206,7 @@ export function build(root, ctx) {
       perDay.update(e.profit_per_h * 24);
       month.update(e.month_revenue == null ? null : e.month_revenue - e.month_costs);
       const [txt, cls] = !t.generator_breaker ? ["OFF-LINE: NOT SELLING", "bad"]
+        : st.baseload_until && Math.abs(e.multiplier - 0.92) < 1e-6 ? ["BASE-LOAD ON TARGET: 92 % PRICE", "ok"]
         : e.multiplier > 1 ? ["ON DEMAND: +5 % PRICE BONUS", "ok"]
         : e.multiplier < 1 ? ["OFF DEMAND: -15 % PRICE PENALTY", "bad"]
         : ["BASE PRICE", "warn"];
@@ -196,6 +217,7 @@ export function build(root, ctx) {
         + "Staying within ±3 % of committed demand earns +5 %; off demand after the deadline costs -15 %. "
         + (e.career ? "Costs are billed at month end (Career tab)." : "Sandbox: typical prices shown, no money changes hands.");
     }
+    blStatus.textContent = st.baseload_until ? `BASE-LOAD at ${st.demand_mwe.toFixed(0)} MWe until ${fmt(st.baseload_until)} (${((st.baseload_until - t.sim_time) / 3600).toFixed(1)} h left)` : "Load-following dispatch.";
     const p = st.pending;
     const left = dl => { const m = Math.round((dl - t.sim_time) / 60); return m >= 0 ? `${m} min left` : `${-m} min overdue`; };
     let status = null;

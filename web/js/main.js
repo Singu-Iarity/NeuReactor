@@ -164,9 +164,11 @@ document.querySelectorAll("#timectl button").forEach(b => b.onclick = async () =
 // Auto time warp.
 $("#warp").onclick = async () => {
   sound.play("button");
-  await api("/time/auto_warp", { on: !telemetry?.auto_warp, factor: +$("#warp-factor").value });
+  await api("/time/auto_warp", { on: !telemetry?.auto_warp, factor: +$("#warp-factor").value, ramp: +$("#ramp-factor").value });
 };
-$("#warp-factor").onchange = () => api("/time/auto_warp", { on: !!telemetry?.auto_warp, factor: +$("#warp-factor").value });
+const warpSettings = () => api("/time/auto_warp", { on: !!telemetry?.auto_warp, factor: +$("#warp-factor").value, ramp: +$("#ramp-factor").value });
+$("#warp-factor").onchange = warpSettings;
+$("#ramp-factor").onchange = warpSettings;
 let lastWarping = false;
 
 function fmtTime(s) {
@@ -225,7 +227,10 @@ function render() {
   $("#warp").classList.toggle("on", !!t.auto_warp);
   $("#warp").classList.toggle("active", !!t.warping);
   if (document.activeElement !== $("#warp-factor") && t.warp_factor) $("#warp-factor").value = String(t.warp_factor);
-  $("#warp-state").textContent = !t.auto_warp ? "" : t.warping ? `WARPING ${t.warp_factor}×` : `HOLD: ${t.warp_reason || "…"}`;
+  if (document.activeElement !== $("#ramp-factor") && t.ramp_factor) $("#ramp-factor").value = String(t.ramp_factor);
+  $("#warp-state").textContent = !t.auto_warp ? ""
+    : t.warp_stage === "ramp" ? `RAMPING ${t.time_scale}× to demand`
+    : t.warping ? `WARPING ${t.warp_factor}×` : `HOLD: ${t.warp_reason || "…"}`;
   $("#warp-state").className = `warp-state ${t.warping ? "go" : t.auto_warp ? "hold" : ""}`;
   if (lastWarping && !t.warping && t.auto_warp) toast(`Auto warp slowed down: ${t.warp_reason}`);
   lastWarping = !!t.warping;

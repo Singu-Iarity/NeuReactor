@@ -24,6 +24,8 @@ struct SaveGame {
     auto_warp: bool,
     #[serde(default)]
     warp_factor: f64,
+    #[serde(default)]
+    ramp_factor: f64,
 }
 
 /// Summary of a save file for the load list.
@@ -83,6 +85,7 @@ pub fn save(w: &World, name: &str) -> Result<(), String> {
         time_scale: w.time_scale,
         auto_warp: w.auto_warp,
         warp_factor: w.warp_factor,
+        ramp_factor: w.ramp_factor,
     };
     let json = serde_json::to_string(&game).map_err(|e| format!("cannot encode save: {e}"))?;
     std::fs::create_dir_all(dir()).map_err(|e| format!("cannot create save folder: {e}"))?;
@@ -112,6 +115,9 @@ pub fn load(w: &mut World, name: &str) -> Result<(), String> {
     w.auto_warp = game.auto_warp;
     if game.warp_factor > 0.0 {
         w.warp_factor = game.warp_factor;
+    }
+    if game.ramp_factor > 0.0 {
+        w.ramp_factor = game.ramp_factor;
     }
     w.warping = false;
     w.paused = false;

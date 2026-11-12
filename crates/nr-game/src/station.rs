@@ -70,6 +70,37 @@ pub enum Intent {
         mw: Option<f64>,
         relative: bool,
     },
+    /// Ask for a base-load block: hold `mw` (or the current commitment)
+    /// for `hours`.
+    Baseload {
+        mw: Option<f64>,
+        hours: f64,
+    },
+}
+
+/// Numbers in a message with the word that follows each.
+fn numbers_with_units(t: &str) -> Vec<(f64, String)> {
+    let words: Vec<&str> = t
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut out = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let digits: String = w
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if let Ok(v) = digits.parse::<f64>() {
+            let rest = &w[digits.len()..];
+            let unit = if rest.is_empty() {
+                words.get(i + 1).copied().unwrap_or("").to_string()
+            } else {
+                rest.to_string()
+            };
+            out.push((v, unit));
+        }
+    }
+    out
 }
 
 impl Intent {
@@ -124,6 +155,25 @@ fn number_in(t: &str) -> Option<f64> {
 pub fn parse_request(text: &str) -> Option<Intent> {
     let t = text.to_lowercase();
     let any = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
+    // Base-load block: "baseload 1000 MW for 3 days", "hold 900 MW for 24 hours".
+    if any(&["base load", "baseload", "base-load"])
+        || (t.contains("hold") && any(&["hour", "day", "week"]))
+    {
+        let mut hours = 24.0;
+        let mut mw = None;
+        for (v, unit) in numbers_with_units(&t) {
+            if unit.starts_with("hour") || unit.starts_with("hr") || unit == "h" {
+                hours = v;
+            } else if unit.starts_with("day") {
+                hours = v * 24.0;
+            } else if unit.starts_with("week") {
+                hours = v * 168.0;
+            } else if mw.is_none() {
+                mw = Some(v);
+            }
+        }
+        return Some(Intent::Baseload { mw, hours });
+    }
     // Derate / offer more: a change word plus a load word or a MW figure.
     let loadish = any(&[
         "load",
@@ -288,6 +338,8 @@ pub enum Call {
     LoadChange,
     /// Internal: a message sent to the wrong station.
     Misrouted,
+    /// Ask dispatch for a base-load block (hold a fixed output for hours).
+    Baseload,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,7 +408,18 @@ pub struct Station {
     /// Power price last used for accounting [$/MWh].
     #[serde(default = "default_price")]
     pub last_price: f64,
+    /// Base-load block: dispatch holds the unit at a fixed output until
+    /// this time (no load-following requests; lower price).
+    #[serde(default)]
+    pub baseload_until: Option<f64>,
+    /// Base-load block awaiting dispatch's answer: (MWe net, hours).
+    #[serde(default)]
+    pub baseload_request: Option<(f64, f64)>,
 }
+
+/// Price multiplier while on target in a base-load block (no
+/// load-following premium).
+pub const BASELOAD_PRICE: f64 = 0.92;
 
 fn default_price() -> f64 {
     45.0
@@ -398,6 +461,8 @@ impl Station {
             change_target: None,
             credits: Vec::new(),
             last_price: 45.0,
+            baseload_until: None,
+            baseload_request: None,
         }
     }
 
@@ -580,6 +645,11 @@ impl Station {
             }
         }
         match intent {
+            Some(Intent::Baseload { mw, hours }) => {
+                let mwe = mw.unwrap_or(self.demand_mwe);
+                self.request_baseload(mwe, hours, t);
+                return intent;
+            }
             Some(Intent::LoadChange {
                 raise,
                 mw,
@@ -668,6 +738,79 @@ impl Station {
             who: None,
             meant_for: None,
         });
+    }
+
+    /// Ask dispatch to base-load the unit at `mwe` net for `hours`.
+    pub fn request_baseload(&mut self, mwe: f64, hours: f64, t: f64) {
+        self.baseload_request = Some((mwe.max(0.0), hours.clamp(1.0, 24.0 * 30.0)));
+        self.say(
+            t,
+            "Control Room",
+            format!("To Grid Dispatch: Requesting a base-load block: hold {mwe:.0} MWe net for {hours:.0} hours."),
+            false,
+        );
+        let at = t + 60.0 + 90.0 * self.rand();
+        self.replies.push(PendingReply {
+            at,
+            call: Call::Baseload,
+            who: None,
+            meant_for: None,
+        });
+    }
+
+    /// End a base-load block early (back to load following).
+    pub fn end_baseload(&mut self, t: f64) {
+        if self.baseload_until.take().is_some() {
+            self.say(
+                t,
+                "Grid Dispatch",
+                "Copy MCR, base-load block cancelled. Back on load-following dispatch.".into(),
+                true,
+            );
+            self.next_request_at = t + 600.0;
+        }
+    }
+
+    fn answer_baseload(&mut self, plant: &Pwr) {
+        let t = plant.time;
+        let Some((want, hours)) = self.baseload_request.take() else {
+            return;
+        };
+        if !plant.tg.breaker {
+            self.say(
+                t,
+                "Grid Dispatch",
+                "MCR, call back when the unit is on-line.".into(),
+                true,
+            );
+            return;
+        }
+        let max = rated_net(plant).max(0.0);
+        let target = want.clamp(0.4 * max, max);
+        if self.rand() < 0.8 {
+            let d = (target - self.demand_mwe.max(0.0)).abs();
+            let deadline = t + (d / RAMP_MW_PER_MIN + 30.0) * 60.0;
+            self.pending = None;
+            self.set_commitment(target, deadline, t);
+            self.baseload_until = Some(t + hours * 3600.0);
+            self.next_request_at = f64::INFINITY;
+            self.say(
+                t,
+                "Grid Dispatch",
+                format!(
+                    "Approved: base-load block at {target:.0} MWe net for {hours:.0} hours. No load-following requests until then; paid at {:.0} % of the market price while on target.",
+                    BASELOAD_PRICE * 100.0
+                ),
+                true,
+            );
+        } else {
+            self.say(
+                t,
+                "Grid Dispatch",
+                "Denied, MCR: we need your unit following load right now. Try again later.".into(),
+                true,
+            );
+        }
     }
 
     fn credit(&mut self, amount: f64, why: String) {
@@ -784,7 +927,11 @@ impl Station {
             Call::ReportTrip => ("Grid Dispatch", "Reporting a unit trip.", 20.0),
             Call::Maintenance => ("Maintenance", "Requesting a maintenance walkdown.", 300.0),
             Call::BoronSample => ("Chemistry", "Requesting an RCS boron sample.", 600.0),
-            Call::SayAgain | Call::NoRequest | Call::LoadChange | Call::Misrouted => return,
+            Call::SayAgain
+            | Call::NoRequest
+            | Call::LoadChange
+            | Call::Misrouted
+            | Call::Baseload => return,
         };
         self.say(t, "Control Room", format!("To {to}: {text}"), false);
         self.replies.push(PendingReply {
@@ -858,6 +1005,7 @@ impl Station {
                 true,
             ),
             Call::LoadChange => self.answer_load_change(plant),
+            Call::Baseload => self.answer_baseload(plant),
             Call::Misrouted => {}
             Call::NoRequest => self.say(
                 t,
@@ -937,6 +1085,7 @@ impl Station {
             self.pending = None;
             self.deadline = None;
             self.reached = false;
+            self.baseload_until = None;
             self.close_instruction(t);
             self.next_request_at = f64::INFINITY;
         }
@@ -946,7 +1095,23 @@ impl Station {
         self.was_online = online;
         self.was_tripped = plant.reactor_tripped;
 
-        if online && self.pending.is_none() && t >= self.next_request_at {
+        if let Some(until) = self.baseload_until {
+            if t >= until {
+                self.baseload_until = None;
+                self.next_request_at = t + 60.0;
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    "Base-load block complete. Back on load-following dispatch.".into(),
+                    true,
+                );
+            }
+        }
+        if online
+            && self.pending.is_none()
+            && self.baseload_until.is_none()
+            && t >= self.next_request_at
+        {
             let target = if self.demand_mwe <= 0.0 {
                 // First instruction: pick up load, or hold what the unit
                 // already produces.
@@ -1087,7 +1252,11 @@ impl Station {
         }
         let net = plant.gross_mwe - plant.house_load();
         if (net - self.demand_mwe).abs() <= 0.03 * rated_net(plant) {
-            1.05
+            if self.baseload_until.is_some() {
+                BASELOAD_PRICE
+            } else {
+                1.05
+            }
         } else if self.deadline.map(|d| plant.time > d).unwrap_or(true) {
             0.85
         } else {
@@ -1364,6 +1533,20 @@ mod dispatch_tests {
             p("calling for turbine runup"),
             Some(Intent::Call(Call::TurbineRollChecks))
         );
+        assert_eq!(
+            p("request baseload 1000 MW for 3 days"),
+            Some(Intent::Baseload {
+                mw: Some(1000.0),
+                hours: 72.0
+            })
+        );
+        assert_eq!(
+            p("can we hold 900 mw for 12 hours"),
+            Some(Intent::Baseload {
+                mw: Some(900.0),
+                hours: 12.0
+            })
+        );
     }
 
     #[test]
@@ -1425,5 +1608,39 @@ mod dispatch_tests {
         plant.time += 700.0;
         st.tick(&mut plant, 700.0);
         assert!(st.boron_sample.is_some());
+    }
+
+    #[test]
+    fn baseload_block_holds_output_without_requests() {
+        let mut plant = Pwr::full_power();
+        let mut st = Station::new();
+        st.tick(&mut plant, 0.1);
+        let net = plant.gross_mwe - plant.house_load();
+        st.issue(plant.time, net, "Test.");
+        st.accept(plant.time);
+        let mut got = false;
+        for _ in 0..10 {
+            st.request_baseload(net, 24.0, plant.time);
+            plant.time += 200.0;
+            st.tick(&mut plant, 200.0);
+            if st.baseload_until.is_some() {
+                got = true;
+                break;
+            }
+        }
+        assert!(got, "dispatch approves a base-load block most of the time");
+        st.reached = true;
+        assert!((st.revenue_multiplier(&plant) - BASELOAD_PRICE).abs() < 1e-9);
+        // No new requests during the block, even well past the usual interval.
+        plant.time += 20.0 * 3600.0;
+        st.tick(&mut plant, 20.0 * 3600.0);
+        assert!(st.pending.is_none());
+        // After it ends, dispatch resumes.
+        plant.time += 5.0 * 3600.0;
+        st.tick(&mut plant, 5.0 * 3600.0);
+        assert!(st.baseload_until.is_none());
+        plant.time += 120.0;
+        st.tick(&mut plant, 120.0);
+        assert!(st.pending.is_some());
     }
 }

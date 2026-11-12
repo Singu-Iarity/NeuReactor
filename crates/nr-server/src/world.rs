@@ -43,6 +43,11 @@ pub struct World {
     pub warp_return: f64,
     /// Why auto warp is holding (empty while warping).
     pub warp_reason: String,
+    /// Speed while ramping to a new commitment (load target set, output
+    /// still moving).
+    pub ramp_factor: f64,
+    /// "hold", "ramp" or "warp".
+    pub warp_stage: String,
     pub operator_token: String,
     pub plugins: BTreeMap<String, PluginRecord>,
     pub events: Vec<LoggedEvent>,
@@ -78,6 +83,8 @@ impl World {
             warping: false,
             warp_return: 1.0,
             warp_reason: String::new(),
+            ramp_factor: 20.0,
+            warp_stage: String::new(),
             operator_token: random_token(),
             plugins: BTreeMap::new(),
             events: Vec::new(),

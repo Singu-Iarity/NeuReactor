@@ -216,6 +216,8 @@ fn api_authed(
             v["warp_factor"] = json!(w.warp_factor);
             v["warping"] = json!(w.warping);
             v["warp_reason"] = json!(w.warp_reason);
+            v["warp_stage"] = json!(w.warp_stage);
+            v["ramp_factor"] = json!(w.ramp_factor);
             drop(w);
             json_resp(req, 200, v)
         }
@@ -284,6 +286,7 @@ fn api_authed(
             struct WarpReq {
                 on: bool,
                 factor: Option<f64>,
+                ramp: Option<f64>,
             }
             let Ok(r) = serde_json::from_str::<WarpReq>(body) else {
                 drop(w);
@@ -291,6 +294,16 @@ fn api_authed(
             };
             if let Some(f) = r.factor {
                 w.warp_factor = f.clamp(5.0, 5000.0);
+            }
+            if let Some(f) = r.ramp {
+                w.ramp_factor = f.clamp(1.0, 300.0);
+            }
+            if !r.on && w.warping {
+                // Hand the speed back now, so a speed picked right after
+                // is not overridden by the sim loop.
+                w.warping = false;
+                w.time_scale = w.warp_return;
+                w.warp_stage.clear();
             }
             w.auto_warp = r.on;
             drop(w);
@@ -362,6 +375,7 @@ fn api_authed(
                 "messages": st.messages.iter().rev().take(80).collect::<Vec<_>>(),
                 "unacked": st.unacked(),
                 "reached": st.reached,
+                "baseload_until": st.baseload_until,
                 "totals": st.totals,
                 "totals_profit": st.totals.profit(),
                 "instruction": st.instruction,
@@ -552,6 +566,26 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
                 return Err("unknown station".into());
             }
             w.station.call_to(c.call, &c.to, t);
+            Ok(())
+        }
+        "baseload" => {
+            #[derive(Deserialize)]
+            struct BaseReq {
+                target_mwe: Option<f64>,
+                hours: Option<f64>,
+                #[serde(default)]
+                cancel: bool,
+            }
+            let b: BaseReq = serde_json::from_str(body).map_err(parse)?;
+            if b.cancel {
+                w.station.end_baseload(t);
+                return Ok(());
+            }
+            if !w.plant.tg.breaker {
+                return Err("the unit must be on-line to request a base-load block".into());
+            }
+            let mwe = b.target_mwe.unwrap_or(w.station.demand_mwe);
+            w.station.request_baseload(mwe, b.hours.unwrap_or(24.0), t);
             Ok(())
         }
         "load_change" => {

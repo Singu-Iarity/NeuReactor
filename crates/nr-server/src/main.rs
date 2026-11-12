@@ -75,39 +75,75 @@ fn auto_warp(w: &mut World) {
             w.time_scale = w.warp_return;
         }
         w.warp_reason.clear();
+        w.warp_stage.clear();
         return;
     }
     let plant = &w.plant;
     let st = &w.station;
     let rated_net = plant.p.gross_mwe - plant.p.house_load_mwe;
     let net = plant.gross_mwe - plant.house_load();
-    let hold = if st.pending.is_some() {
-        Some("new grid request".to_string())
+    let on_demand = st.reached && (net - st.demand_mwe).abs() <= 0.03 * rated_net;
+    // Stage: hold (operator needed), ramp (load target set, output moving),
+    // warp (steady on the commitment).
+    let (stage, reason): (&str, String) = if st.pending.is_some() {
+        ("hold", "new grid request".into())
     } else if !plant.tg.breaker {
-        Some("unit off-line".into())
+        ("hold", "unit off-line".into())
     } else if st.demand_mwe <= 0.0 {
-        Some("no dispatch commitment".into())
-    } else if !st.reached || (net - st.demand_mwe).abs() > 0.03 * rated_net {
-        Some("output not on demand".into())
+        ("hold", "no dispatch commitment".into())
     } else if plant.reactor_tripped {
-        Some("reactor tripped".into())
+        ("hold", "reactor tripped".into())
+    } else if let Some(a) = plant.serious_alarm() {
+        ("hold", format!("alarm: {a}"))
+    } else if on_demand {
+        ("warp", String::new())
     } else {
-        plant.serious_alarm().map(|a| format!("alarm: {a}"))
+        // Ramp only once the load target matches the commitment.
+        let wanted = (st.demand_mwe + plant.house_load()).min(plant.load_limit_mwe());
+        let master =
+            plant.automation.mode(nr_api::ModuleId::PlantMaster) == nr_api::ModuleMode::Auto;
+        let module = if master {
+            nr_api::ModuleId::PlantMaster
+        } else {
+            nr_api::ModuleId::TurbineGovernor
+        };
+        let governor_auto =
+            plant.automation.mode(nr_api::ModuleId::TurbineGovernor) == nr_api::ModuleMode::Auto;
+        let target = plant
+            .automation
+            .setpoint(module, "target_mwe")
+            .unwrap_or(0.0);
+        if !governor_auto {
+            ("hold", "turbine governor not in AUTO".into())
+        } else if (target - wanted).abs() > (0.02 * rated_net).max(10.0) {
+            (
+                "hold",
+                format!("set turbine load target to {wanted:.0} MWe gross"),
+            )
+        } else {
+            ("ramp", String::new())
+        }
     };
-    match hold {
-        None => {
+    let scale = match stage {
+        "warp" => Some(w.warp_factor),
+        "ramp" => Some(w.ramp_factor.min(w.warp_factor)),
+        _ => None,
+    };
+    match scale {
+        Some(f) => {
             if !w.warping {
-                w.warp_return = w.time_scale.min(w.warp_factor);
+                w.warp_return = w.time_scale.min(f);
                 w.warping = true;
+            }
+            if w.warp_stage != stage {
                 w.log(nr_reactors::PlantEvent::info(&format!(
-                    "Auto time warp: {}x",
-                    w.warp_factor
+                    "Auto time warp: {stage} {f}x"
                 )));
             }
-            w.time_scale = w.warp_factor;
+            w.time_scale = f;
             w.warp_reason.clear();
         }
-        Some(reason) => {
+        None => {
             if w.warping {
                 w.warping = false;
                 w.time_scale = w.warp_return;
@@ -118,6 +154,7 @@ fn auto_warp(w: &mut World) {
             w.warp_reason = reason;
         }
     }
+    w.warp_stage = stage.to_string();
 }
 
 fn sim_loop(world: Arc<Mutex<World>>) {
