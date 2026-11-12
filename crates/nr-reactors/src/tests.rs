@@ -694,3 +694,70 @@ fn analog_reactor_power_controller_is_rod_only() {
         )
         .is_err());
 }
+
+#[test]
+fn vintage_unit_is_protected_from_overpower_and_overcooling() {
+    use nr_api::{Era, Slot, Tier};
+    let mut p = Pwr::full_power();
+    for s in nr_api::equipment::SLOTS {
+        let tier = if s.slot == Slot::SteamGenerators {
+            Tier::Quality
+        } else {
+            Tier::Premium
+        };
+        op(
+            &mut p,
+            Command::SetComponent {
+                slot: s.slot,
+                era: Era::Vintage,
+                tier,
+                size: None,
+            },
+        );
+    }
+    let max = p.max_gross_mwe();
+    assert!((1060.0..1110.0).contains(&max), "vintage max output {max}");
+    // Rod control on Tavg, turbine asked for nameplate: C-2 / runback /
+    // load limit hold the reactor near 100 % instead of tripping.
+    p.advance(1800.0);
+    assert!(!p.reactor_tripped, "{:?}", p.trips);
+    assert!(
+        p.thermal_fraction() < 1.03,
+        "power {}",
+        p.thermal_fraction()
+    );
+    assert!(
+        (p.tavg() - p.tref()).abs() < 2.5,
+        "tavg {} tref {}",
+        p.tavg(),
+        p.tref()
+    );
+    // Reactor power held at 102 % with the turbine asked for 1150: the
+    // load limiter stops the turbine draining the primary.
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::ReactorPower,
+            mode: ModuleMode::Auto,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::ReactorPower,
+            key: "power_pct".into(),
+            value: 102.0,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::TurbineGovernor,
+            key: "target_mwe".into(),
+            value: 1150.0,
+        },
+    );
+    p.advance(1800.0);
+    assert!(!p.reactor_tripped, "{:?}", p.trips);
+    assert!(p.tavg() > 305.0, "tavg {} (overcooled)", p.tavg());
+}

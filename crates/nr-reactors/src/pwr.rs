@@ -247,6 +247,8 @@ const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
     ("turbine_vibration_um", 1.0, 1.5, (0.0, 300.0)),
     ("power_ref_pct", 0.0, 0.0, (0.0, 120.0)),
     ("house_load_mw", 0.5, 0.2, (0.0, 200.0)),
+    ("max_gross_mwe", 0.0, 0.0, (0.0, 2000.0)),
+    ("load_limit_mwe", 0.0, 0.0, (0.0, 2000.0)),
     ("sut_load_mw", 0.3, 0.2, (0.0, 200.0)),
     ("uat_load_mw", 0.3, 0.2, (0.0, 200.0)),
     ("grid_import_mw", 0.5, 0.1, (0.0, 200.0)),
@@ -366,6 +368,9 @@ pub struct Pwr {
     pub grid_permission: bool,
     vac_required_until: f64,
     rod_block_until: f64,
+    /// Overpower turbine runback in progress.
+    #[serde(default)]
+    pub runback: bool,
     pub tg: TurbineGenerator,
     pub sync_block_until: f64,
     prev_breaker: bool,
@@ -505,6 +510,7 @@ impl Pwr {
             grid_permission: true,
             vac_required_until: -1.0,
             rod_block_until: -1.0,
+            runback: false,
             tg: TurbineGenerator::synced(p.generator_rating),
             sync_block_until: -1.0,
             prev_breaker: true,
@@ -845,6 +851,7 @@ impl Pwr {
         self.read_instruments(dt);
         self.update_nis_permissives();
         self.run_automation(dt);
+        self.overpower_runback(dt);
         self.apply_output_limit();
         self.run_protection();
         self.pzr_low_level_interlock();
@@ -1160,6 +1167,15 @@ impl Pwr {
                 }
             }
         }
+        // C-2: power range high flux rod stop (103 %) blocks withdrawal,
+        // manual or automatic.
+        if self.c2_rod_stop() {
+            for b in &mut self.banks {
+                if b.target > b.position {
+                    b.target = b.position;
+                }
+            }
+        }
         let speed = self.p.rod_speed_max.max(self.rod_spm / 60.0)
             * self.automation.equipment.perf(Slot::RodDrives);
         for i in 0..self.banks.len() {
@@ -1450,6 +1466,8 @@ impl Pwr {
         m.insert("steam_dump_pct", self.steam_dump * 100.0);
         m.insert("gross_mwe", self.gross_mwe);
         m.insert("net_mwe", self.gross_mwe - self.house_load());
+        m.insert("max_gross_mwe", self.max_gross_mwe());
+        m.insert("load_limit_mwe", self.load_limit_mwe());
         m.insert("house_load_mw", self.elec.house_load_mw);
         m.insert("sut_load_mw", self.elec.sut_load_mw);
         m.insert("uat_load_mw", self.elec.uat_load_mw);
@@ -2046,6 +2064,59 @@ impl Pwr {
         self.trip_turbine();
     }
 
+    /// C-2 rod stop: power range above 103 %.
+    pub fn c2_rod_stop(&self) -> bool {
+        !self.reactor_tripped && self.r("nuclear_power_pct") > 103.0
+    }
+
+    /// Overpower turbine runback: above 104 % reactor power the turbine
+    /// load is backed off (≈10 %/min) until power is back below 102 %.
+    fn overpower_runback(&mut self, dt: f64) {
+        let power = self.r("nuclear_power_pct");
+        let on_line = self.tg.breaker && !self.turbine_tripped && !self.reactor_tripped;
+        if !on_line {
+            self.runback = false;
+            return;
+        }
+        if !self.runback && power > 104.0 {
+            self.runback = true;
+            self.events
+                .push(PlantEvent::warn("Turbine runback: reactor overpower"));
+        } else if self.runback && power < 102.0 {
+            self.runback = false;
+            self.events
+                .push(PlantEvent::info("Turbine runback complete"));
+        }
+        if self.runback {
+            // Back the load target off to what the unit makes at ~98 %
+            // reactor power; while still above 104 %, also close the
+            // governor valves directly (≈10 %/min).
+            let cap = 0.98 * self.max_gross_mwe();
+            for m in [ModuleId::TurbineGovernor, ModuleId::PlantMaster] {
+                if let Some(t) = self.automation.setpoint(m, "target_mwe") {
+                    if t > cap {
+                        self.automation.setpoint_set(m, "target_mwe", cap);
+                    }
+                }
+            }
+            if power > 104.0 {
+                self.turbine_valve = (self.turbine_valve * (1.0 - 0.10 / 60.0 * dt)).max(0.0);
+            }
+        }
+    }
+
+    /// Gross output this unit can make at 100 % reactor power with its
+    /// installed equipment (turbine, generator, condenser and steam
+    /// generator quality; undersized components) [MWe].
+    pub fn max_gross_mwe(&self) -> f64 {
+        let e = &self.automation.equipment;
+        let quality = e.perf(Slot::Turbine)
+            * e.perf(Slot::Generator).powf(0.3)
+            * e.perf(Slot::Condenser).powf(0.5)
+            * e.perf(Slot::SteamGenerators).powf(0.5);
+        (self.p.gross_mwe * quality).min(self.p.gross_mwe * self.output_limit().0 * 1.03)
+    }
+
     /// Reactor power controller implemented as an analog cabinet?
     fn rpc_analog(&self) -> bool {
         matches!(
@@ -2067,8 +2138,22 @@ impl Pwr {
         self.automation.equipment.output_limit()
     }
 
+    /// Governor load limiter: the turbine load that matches 102 % reactor
+    /// power with the installed equipment [MWe].
+    pub fn load_limit_mwe(&self) -> f64 {
+        1.02 * self.max_gross_mwe()
+    }
+
     /// Undersized turbine-side equipment caps steam flow to the turbine.
     fn apply_output_limit(&mut self) {
+        // Load limiter: a load target above what the reactor can supply
+        // only drains the primary (Tavg and steam pressure sag).
+        let limit = self.load_limit_mwe();
+        for m in [ModuleId::TurbineGovernor, ModuleId::PlantMaster] {
+            if self.automation.setpoint(m, "target_mwe").unwrap_or(0.0) > limit {
+                self.automation.setpoint_set(m, "target_mwe", limit);
+            }
+        }
         let (limit, _) = self.output_limit();
         if limit < 1.0 {
             // Cap steam flow (not just valve position: throttling raises
@@ -2273,6 +2358,12 @@ impl Pwr {
                 }
                 if self.reactor_tripped && *direction == RodDirection::Out {
                     return deny("reactor trip is latched; reset before withdrawing rods");
+                }
+                if *direction == RodDirection::Out && self.c2_rod_stop() {
+                    self.rod_block_until = self.time + 5.0;
+                    return deny(
+                        "ROD WITHDRAWAL BLOCKED: C-2 power range high flux rod stop (above 103 %)",
+                    );
                 }
                 if any_control && *direction == RodDirection::Out && !self.shutdown_banks_out() {
                     self.rod_block_until = self.time + 5.0;
@@ -2911,6 +3002,17 @@ impl Pwr {
         }
         if self.time < self.rod_block_until {
             add(rx, "rod_block", "ROD WITHDRAWAL BLOCKED", A);
+        }
+        if self.c2_rod_stop() {
+            add(rx, "c2", "C-2 PR HIGH FLUX ROD STOP", W);
+        }
+        if self.runback {
+            add(
+                "turbine",
+                "runback",
+                "TURBINE RUNBACK: REACTOR OVERPOWER",
+                A,
+            );
         }
         if !tripped && power > 5.0 && self.banks[5].position < 80.0 {
             if self.banks[5].position < 30.0 && self.banks[4].position < 128.0 {

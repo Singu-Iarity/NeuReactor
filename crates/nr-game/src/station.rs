@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 /// Rated net output of the unit, used for dispatch [MWe].
 fn rated_net(plant: &Pwr) -> f64 {
-    plant.p.gross_mwe - plant.p.house_load_mwe
+    // What the unit can actually deliver at 100 % reactor power with its
+    // installed equipment.
+    plant.max_gross_mwe() - plant.p.house_load_mwe
 }
 const RAMP_MW_PER_MIN: f64 = 20.0;
 
@@ -629,7 +631,9 @@ impl Station {
             let target = if self.demand_mwe <= 0.0 {
                 // First instruction: pick up load, or hold what the unit
                 // already produces.
-                (plant.gross_mwe - plant.house_load()).max(300.0)
+                (plant.gross_mwe - plant.house_load())
+                    .max(300.0)
+                    .min(rated_net(plant))
             } else {
                 let mut tgt;
                 loop {

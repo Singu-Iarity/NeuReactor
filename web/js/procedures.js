@@ -83,6 +83,7 @@ export const PROCEDURES = [
           h("tbody", {}, ...rows.map(([mwe, load, r]) => h("tr", {},
             h("td", {}, mwe === 0 ? "0 (synced, no load)" : `${mwe}`), h("td", {}, `${load} %`), h("td", {}, `≈ ${r.toFixed(0)} %`))))),
         h("ul", {},
+          h("li", {}, "These figures are for dated/quality equipment. Older or cheaper turbine, generator, condenser and steam generators are less efficient: 100 % reactor power makes less. The Turbine tab shows MAX OUTPUT @ 100 % for your plant, and the governor's LOAD LIMIT (102 % equivalent) stops you asking for more than the reactor can supply."),
           h("li", {}, "Below about 30 % load the feedwater is colder (little extraction heating): add 1–2 % reactor power."),
           h("li", {}, `Grid demand is NET. Add the house load first (about ${(0.045 * g).toFixed(0)}–${(0.052 * g).toFixed(0)} MW at power; see the Electrical tab).`),
           h("li", {}, h("b", {}, "The real check is Tavg vs Tref"), " on the rod control station: Tavg below Tref = reactor behind the turbine (withdraw rods or reduce load); above Tref = reactor ahead (insert rods or take more load)."),

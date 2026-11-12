@@ -7,7 +7,7 @@ export const windows = [
   ["turb_trip", "TURBINE TRIP"], ["turb_latched", "TURBINE LATCHED"], ["turning_gear", "TURBINE ON TURNING GEAR"], ["gov_auto", "GOVERNOR IN AUTO"], ["autosync", "AUTO-SYNC ACTIVE"], ["synccheck", "SYNC-CHECK ACTIVE"],
   ["overspeed", "TURBINE OVERSPEED"], ["high_vib", "TURBINE HIGH VIBRATION"], ["low_vac_trip", "LOW VACUUM TRIP"], ["vib_trip", "HIGH VIBRATION TRIP"], ["hall_checks", "TURBINE ROLL WITHOUT HALL CHECKS"], ["reverse_power", "GEN REVERSE POWER"],
   ["gen_online", "GENERATOR ON-LINE"], ["ready_sync", "READY TO SYNC"], ["grid_perm", "GRID PERMISSION REQUIRED"], ["sync_blocked", "PHASE Δ OUT OF RANGE"], ["field_open", "FIELD BREAKER OPEN"], ["gen_lockout", "GEN LOCKOUT 86G"],
-  ["gen_damage", "GENERATOR DAMAGE"], ["derated", "UNIT DERATED: COMPONENT UNDERSIZED"], ["", ""], ["", ""], ["", ""], ["", ""],
+  ["gen_damage", "GENERATOR DAMAGE"], ["derated", "UNIT DERATED: COMPONENT UNDERSIZED"], ["runback", "TURBINE RUNBACK: REACTOR OVERPOWER"], ["", ""], ["", ""], ["", ""],
 ];
 
 const ACCEL = { S: 60, M: 120, F: 180 };
@@ -28,6 +28,8 @@ export function build(root, ctx) {
   const vib = roundMeter("TURB. VIBRATION", { min: 0, max: 250, unit: "µm p-p", major: 5, digits: 0, bands: [{ from: 125, to: 200, c: "yellow" }, { from: 200, to: 250, c: "red" }] });
   const vacuum = edgewise("CONDENSER VACUUM", { min: 0, max: 105, unit: "kPa abs", major: 7, digits: 1, bands: [{ from: 25, to: 30, c: "yellow" }, { from: 30, to: 105, c: "red" }] });
   const net = readout("NET OUTPUT [MWe]", { digits: 0 });
+  const maxOut = readout("MAX OUTPUT @ 100 % [MWe]", { digits: 0 });
+  const loadLim = readout("LOAD LIMIT [MWe]", { digits: 0 });
 
   // Main steam control: manual valve raise/lower (Unit 2 style), live when
   // the owning module is in MANUAL.
@@ -81,7 +83,7 @@ export function build(root, ctx) {
 
   root.append(h("div", { class: "board" },
     h("section", { class: "sect wide", "data-section": "turbine.control" }, plate("TURBINE CONTROL"),
-      h("div", { class: "row" }, load.el, net.el, rpmR.el, steamP.el),
+      h("div", { class: "row" }, load.el, net.el, rpmR.el, steamP.el, maxOut.el, loadLim.el),
       h("div", { class: "row" }, speed.el, valve.el, vib.el, h("div", { class: "col" }, fine.el, vacuum.el, health.el))),
     h("section", { class: "sect", "data-section": "turbine.control" }, plate("MAIN STEAM CONTROL"),
       h("p", { class: "note" }, "Manual valve control: governor in MANUAL for the control valve, steam dump in MANUAL for the bypass."),
@@ -110,6 +112,8 @@ export function build(root, ctx) {
     vib.update(R.turbine_vibration_um);
     vacuum.update(R.condenser_kpa);
     net.update(R.net_mwe);
+    maxOut.update(R.max_gross_mwe ?? 0);
+    loadLim.update(R.load_limit_mwe ?? 0);
     const govManual = ctx.moduleMode("turbine_governor") === "manual";
     ctlValve.update(!govManual || t.turbine_tripped);
     precise.update(!govManual || t.turbine_tripped);
