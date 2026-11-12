@@ -732,15 +732,22 @@ mod tests {
         st.was_online = false;
         run(&mut st, &mut p, 60.0);
         let req = st.pending.clone().expect("request issued");
-        assert_eq!(req.target_mwe, 300.0);
-        assert_eq!(st.accept(p.time), Some(300.0));
+        // First instruction holds the unit's current output (at least 300 MWe).
+        let net = p.gross_mwe - p.house_load();
+        assert!(
+            (req.target_mwe - net).abs() <= 12.5,
+            "{} vs {net}",
+            req.target_mwe
+        );
+        let first = req.target_mwe;
+        assert_eq!(st.accept(p.time), Some(first));
         assert!(st.pending.is_none());
         // AGC accepts automatically.
         st.agc = true;
         st.next_request_at = p.time;
         run(&mut st, &mut p, 2.0);
         assert!(st.pending.is_none());
-        assert!(st.demand_mwe != 300.0);
+        assert!(st.demand_mwe != first);
     }
 
     #[test]
