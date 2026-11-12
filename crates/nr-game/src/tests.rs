@@ -7,9 +7,17 @@ fn equip_all(c: &mut Career, era: Era, tier: Tier, plant: &mut Pwr) {
                 slot: s.slot,
                 era,
                 tier,
+                size: None,
             },
             plant,
         )
+        .or_else(|e| {
+            if e == "already installed" {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
         .unwrap();
     }
 }
@@ -24,7 +32,8 @@ fn start_year_gates_technology() {
             Purchase::Component {
                 slot: Slot::Turbine,
                 era: Era::Dated,
-                tier: Tier::Quality
+                tier: Tier::Quality,
+                size: None,
             },
             &mut plant
         )
@@ -34,7 +43,8 @@ fn start_year_gates_technology() {
             Purchase::Component {
                 slot: Slot::Turbine,
                 era: Era::Vintage,
-                tier: Tier::Premium
+                tier: Tier::Premium,
+                size: None,
             },
             &mut plant
         )
@@ -73,6 +83,7 @@ fn budget_forces_trade_offs() {
                 slot: s.slot,
                 era: Era::Modern,
                 tier: Tier::Premium,
+                size: None,
             })
             .total
         })
@@ -92,6 +103,7 @@ fn build_phase_swaps_are_refunded_and_kits_are_charged() {
             slot: Slot::Turbine,
             era: Era::Dated,
             tier: Tier::Quality,
+            size: None,
         },
         &mut plant,
     )
@@ -101,6 +113,7 @@ fn build_phase_swaps_are_refunded_and_kits_are_charged() {
             slot: Slot::Turbine,
             era: Era::Vintage,
             tier: Tier::Basic,
+            size: None,
         },
         &mut plant,
     )
@@ -112,6 +125,7 @@ fn build_phase_swaps_are_refunded_and_kits_are_charged() {
         slot: Slot::Generator,
         era: Era::Modern,
         tier: Tier::Quality,
+        size: None,
     });
     assert_eq!(q.kits.len(), 1);
     assert!(q.total > q.price);
@@ -153,7 +167,8 @@ fn commission_operate_and_earn() {
             Purchase::Component {
                 slot: Slot::Turbine,
                 era: Era::Dated,
-                tier: Tier::Premium
+                tier: Tier::Premium,
+                size: None,
             },
             &mut running
         )
@@ -243,5 +258,64 @@ fn unplanned_trip_is_penalised_and_diesel_fuel_is_bought() {
     assert_eq!(
         plant.elec.diesels[0].fuel_l,
         plant.elec.diesels[0].fuel_capacity_l
+    );
+}
+
+#[test]
+fn bigger_core_in_an_outage_rebuilds_the_unit_and_needs_rescaling() {
+    use nr_api::UnitSize;
+    let mut plant = Pwr::hot_standby();
+    let mut c = Career::new(1990, Difficulty::Normal);
+    c.money = 1e11;
+    // Design the unit at 900 MWe: core first, everything else follows it.
+    c.buy(
+        Purchase::Component {
+            slot: Slot::ReactorCore,
+            era: Era::Dated,
+            tier: Tier::Quality,
+            size: Some(UnitSize::Mwe900),
+        },
+        &mut plant,
+    )
+    .unwrap();
+    equip_all(&mut c, Era::Dated, Tier::Quality, &mut plant);
+    assert_eq!(c.equipment.unit_size(), UnitSize::Mwe900);
+    assert!(c.equipment.ic_matches(), "design size needs no rescaling");
+    let mut plant = c.commission().unwrap();
+    assert_eq!(plant.size(), UnitSize::Mwe900);
+    assert!((plant.p.gross_mwe - 900.0).abs() < 1e-9);
+    // Upgrade to a 1300 MWe core in an outage.
+    let q = c.quote(Purchase::Component {
+        slot: Slot::ReactorCore,
+        era: Era::Dated,
+        tier: Tier::Quality,
+        size: Some(UnitSize::Mwe1300),
+    });
+    assert!(q.available);
+    assert!(
+        q.kits.iter().any(|k| k.key.starts_with("ic_scale")),
+        "I&C rescaling priced in: {:?}",
+        q.kits
+    );
+    let kits: f64 = q.kits.iter().map(|k| k.price).sum();
+    assert!((q.total - (q.price + kits - q.refund)).abs() < 1.0);
+    c.buy(q.purchase, &mut plant).unwrap();
+    assert_eq!(plant.size(), UnitSize::Mwe1300);
+    assert!((plant.p.gross_mwe - 1300.0).abs() < 1e-9);
+    assert!(plant.automation.equipment.ic_matches());
+    // The 900 MWe turbine and rod drives now limit the unit.
+    assert!(plant.output_limit().0 < 0.75);
+    assert!(plant.rod_drives_undersized());
+    // A 1300 MWe unit can't be bought before 1982.
+    let early = Career::new(1975, Difficulty::Normal);
+    assert!(
+        !early
+            .quote(Purchase::Component {
+                slot: Slot::ReactorCore,
+                era: Era::Vintage,
+                tier: Tier::Quality,
+                size: Some(UnitSize::Mwe1300),
+            })
+            .available
     );
 }

@@ -7,7 +7,7 @@ export const windows = [
   ["turb_trip", "TURBINE TRIP"], ["turb_latched", "TURBINE LATCHED"], ["turning_gear", "TURBINE ON TURNING GEAR"], ["gov_auto", "GOVERNOR IN AUTO"], ["autosync", "AUTO-SYNC ACTIVE"], ["synccheck", "SYNC-CHECK ACTIVE"],
   ["overspeed", "TURBINE OVERSPEED"], ["high_vib", "TURBINE HIGH VIBRATION"], ["low_vac_trip", "LOW VACUUM TRIP"], ["vib_trip", "HIGH VIBRATION TRIP"], ["hall_checks", "TURBINE ROLL WITHOUT HALL CHECKS"], ["reverse_power", "GEN REVERSE POWER"],
   ["gen_online", "GENERATOR ON-LINE"], ["ready_sync", "READY TO SYNC"], ["grid_perm", "GRID PERMISSION REQUIRED"], ["sync_blocked", "PHASE Δ OUT OF RANGE"], ["field_open", "FIELD BREAKER OPEN"], ["gen_lockout", "GEN LOCKOUT 86G"],
-  ["gen_damage", "GENERATOR DAMAGE"], ["", ""], ["", ""], ["", ""], ["", ""], ["", ""],
+  ["gen_damage", "GENERATOR DAMAGE"], ["derated", "UNIT DERATED: COMPONENT UNDERSIZED"], ["", ""], ["", ""], ["", ""], ["", ""],
 ];
 
 const ACCEL = { S: 60, M: 120, F: 180 };

@@ -1,5 +1,6 @@
 // Grid control station: dispatch demand vs unit output, load requests, AGC.
 
+import { rating, mweScale } from "../rating.js";
 import { h, plate, roundMeter, readout, recorder, pushbutton, maStation } from "../widgets.js";
 import { api } from "../api.js";
 import { play } from "../sound.js";
@@ -15,15 +16,15 @@ export const windows = [
 const fmt = s => `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}`;
 
 export function build(root, ctx) {
-  const demandM = roundMeter("GRID DEMAND", { min: 0, max: 1300, unit: "MWe net", major: 13, digits: 0 });
-  const netM = roundMeter("UNIT NET OUTPUT", { min: 0, max: 1300, unit: "MWe net", major: 13, digits: 0, ref: true });
+  const demandM = roundMeter("GRID DEMAND", { min: 0, max: mweScale(), unit: "MWe net", major: 10, digits: 0 });
+  const netM = roundMeter("UNIT NET OUTPUT", { min: 0, max: mweScale(), unit: "MWe net", major: 10, digits: 0, ref: true });
   const gross = readout("GROSS [MWe]", { digits: 0 });
   const net = readout("NET [MWe]", { digits: 0, size: "big" });
   const demand = readout("DEMAND [MWe]", { digits: 0, size: "big" });
   const freq = readout("GRID FREQ [Hz]", { digits: 3 });
   const rec = recorder("DEMAND vs NET", [
-    { tag: "demand", label: "Demand", color: "#1c5bd6", min: 0, max: 1300 },
-    { tag: "net_mwe", label: "Net output", color: "#d6261c", min: 0, max: 1300 },
+    { tag: "demand", label: "Demand", color: "#1c5bd6", min: 0, max: mweScale() },
+    { tag: "net_mwe", label: "Net output", color: "#d6261c", min: 0, max: mweScale() },
   ], { span: 3600 });
   const request = h("div", { class: "request" });
   const perf = h("div", { class: "card-sub" });
@@ -55,7 +56,7 @@ export function build(root, ctx) {
   const bonus = h("div", { class: "req-status" }, "");
   const econNote = h("p", { class: "note" }, "");
   const ulc = maStation("UNIT LOAD CONTROLLER", {
-    module: "plant_master", pvTag: "gross_mwe", spKey: "target_mwe", spStep: 10, digits: 0, devSpan: 50, range: [0, 1250],
+    module: "plant_master", pvTag: "gross_mwe", spKey: "target_mwe", spStep: 10, digits: 0, devSpan: 50, range: [0, Math.ceil(rating.gross * 1.08 / 50) * 50],
   }, ctx);
 
   root.append(h("div", { class: "board" },

@@ -1,5 +1,6 @@
 // NeuReactor control room: tabs, annunciators, polling and shared context.
 
+import { rating, setRating } from "./rating.js";
 import { api, send, toast } from "./api.js";
 import { h, annunciatorPanel, animate } from "./widgets.js";
 import * as ann from "./annunciator.js";
@@ -99,6 +100,9 @@ function scramPair() {
 }
 
 // ---------------------------------------------------------------- build
+// Read the unit rating before building panels so meters fit the unit size.
+try { setRating(await api("/telemetry")); } catch (_) { /* defaults */ }
+const builtSize = rating.size;
 const tabs = $("#tabs");
 const renderers = new Map();
 const annCells = new Map();
@@ -164,6 +168,8 @@ function setClass(el, cls) {
 
 function render() {
   const t = telemetry;
+  // A different unit size (new core, sandbox size change): rebuild the room.
+  if (t.unit_size && t.unit_size !== builtSize) { location.reload(); return; }
   document.querySelectorAll(".sect, .panel-head").forEach(el => {
     const g = t.sections[el.dataset.section] || "analog";
     if (el.dataset.gen !== g) el.dataset.gen = g;

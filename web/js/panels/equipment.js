@@ -16,10 +16,17 @@ export function build(root, ctx) {
   const mods = h("div", { class: "equip-grid" });
   const comps = h("div", { class: "equip-grid" });
   const kits = h("div", { class: "kits" });
+  const SIZES = ["mwe600", "mwe900", "mwe1150", "mwe1300"];
+  const sizeName = sz => `${sz.slice(3)} MWe`;
+  const unitSize = h("div", { class: "sel-row unit-size" });
+  const sizeNote = h("p", { class: "note" }, "");
   const modeNote = h("p", { class: "note" });
   root.append(h("div", { class: "board" },
+    h("section", { class: "sect wide" }, plate("UNIT SIZE"),
+      h("p", { class: "note" }, "Rated output of the unit. The reactor core sets it: fuel assemblies, control rods, coolant flow and every component's size. Changing it rebuilds the plant at hot standby with matched components."),
+      unitSize, sizeNote),
     h("section", { class: "sect wide" }, plate("PLANT COMPONENTS"),
-      h("p", { class: "note" }, "Each component has an era (vintage / dated / modern) and a quality tier (basic / quality / premium) that change how well it performs. In career mode they are bought in the Career tab."),
+      h("p", { class: "note" }, "Each component has an era (vintage / dated / modern), a quality tier (basic / quality / premium) and a size. A component smaller than the core derates the unit; rod drives smaller than the core cannot move its rods. In career mode they are bought in the Career tab."),
       comps, plate("CONVERSION KITS", "small"), kits),
     h("section", { class: "sect wide" }, plate("I&C HARDWARE — COMPUTERS"),
       h("p", { class: "note" }, "Computers run automation, but cannot see or drive a panel until that panel's package is installed."),
@@ -34,11 +41,18 @@ export function build(root, ctx) {
   root.addEventListener("click", e => {
     const b = e.target.closest("button");
     if (!b) return;
+    if (b.dataset.unitSize) {
+      const t = ctx.t();
+      if (b.dataset.unitSize !== t.unit_size && confirm(`Rebuild the plant as a ${sizeName(b.dataset.unitSize)} unit at hot standby? The current plant state is discarded.`)) {
+        ctx.send({ type: "load_scenario", name: "hot_standby", size: b.dataset.unitSize });
+      }
+      return;
+    }
     const card = b.closest("[data-id]");
     if (!card) return;
-    if (b.dataset.era || b.dataset.tier) {
+    if (b.dataset.era || b.dataset.tier || b.dataset.size) {
       const cur = ctx.t().equipment.components[card.dataset.id];
-      ctx.send({ type: "set_component", slot: card.dataset.id, era: b.dataset.era || cur.era, tier: b.dataset.tier || cur.tier });
+      ctx.send({ type: "set_component", slot: card.dataset.id, era: b.dataset.era || cur.era, tier: b.dataset.tier || cur.tier, size: b.dataset.size || cur.size });
     } else if (b.dataset.ctl || b.dataset.cera || b.dataset.ctier) {
       const cur = ctx.t().equipment.controllers[card.dataset.id] || { kind: "digital" };
       let c;
@@ -66,9 +80,11 @@ export function build(root, ctx) {
     const career = t.game_mode === "career";
     const hwName = id => t.upgrades.find(u => u.id === id)?.name ?? id;
     const hwOn = id => t.upgrades.find(u => u.id === id)?.installed;
-    const s = JSON.stringify([career, t.upgrades.map(u => u.installed), t.modules.map(m => [m.mode, m.owned, Object.keys(m.setpoints)]), t.equipment.components, t.equipment.controllers]);
+    const s = JSON.stringify([career, t.unit_size, t.upgrades.map(u => u.installed), t.modules.map(m => [m.mode, m.owned, Object.keys(m.setpoints)]), t.equipment.components, t.equipment.controllers]);
     if (s !== sig) {
       sig = s;
+      unitSize.replaceChildren(...SIZES.map(sz => h("button", { "data-unit-size": sz, class: sz === t.unit_size ? "on" : "", disabled: career }, sizeName(sz))));
+      sizeNote.textContent = `${t.reactor_type}: ${t.rated_thermal_mw.toFixed(0)} MWt, ${t.rated_gross_mwe.toFixed(0)} MWe gross.` + (career ? " Career: change the unit size by buying a new reactor core in an outage." : "");
       modeNote.textContent = career ? "Career mode: equipment is bought and installed through the plant shop." : "Sandbox: click INSTALLED to add or remove equipment.";
       const instBtn = on => h("button", { class: `inst ${on ? "on" : ""}`, "data-install": on ? "1" : "0", disabled: career }, on ? "INSTALLED" : "NOT INSTALLED");
       const hwCard = u => h("div", { class: `card hw ${u.kind === "computer" ? "computer" : ""} ${u.installed ? "installed" : ""}`, "data-id": u.id, "data-kind": "upgrade" },
@@ -86,7 +102,9 @@ export function build(root, ctx) {
       comps.replaceChildren(...Object.entries(E.components).map(([slot, c]) => h("div", { class: "card", "data-id": slot },
         h("div", { class: "card-name" }, slot.replaceAll("_", " ").toUpperCase()),
         selRow("era", ["vintage", "dated", "modern"], c.era),
-        selRow("tier", ["basic", "quality", "premium"], c.tier))));
+        selRow("tier", ["basic", "quality", "premium"], c.tier),
+        slot === "board_instruments" || slot === "reactor_core" ? null
+          : h("div", { class: "sel-row" }, ...SIZES.map(sz => h("button", { "data-size": sz, class: `${sz === c.size ? "on" : ""} ${sz === t.unit_size ? "unit" : ""}`, disabled: career, title: sz === t.unit_size ? "matches the core" : "" }, sizeName(sz)))))));
       kits.replaceChildren(...(t.required_kits.length
         ? t.required_kits.map(k => h("div", { class: "card-sub" }, `${E.kits.includes(k.key) ? "✓ fitted" : "✗ MISSING"} — ${k.name} (${money(k.price)})`))
         : [h("p", { class: "note" }, "No conversion kits needed: all connected equipment is within one era.")]));

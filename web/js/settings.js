@@ -7,6 +7,8 @@ const defaults = {
   lamps: "us",
   /** Shake the control room with turbine vibration. */
   shake: true,
+  /** Ask for confirmation before each career purchase. */
+  confirmBuy: true,
 };
 
 let state = { ...defaults };

@@ -1,3 +1,4 @@
+import { mweScale } from "../rating.js";
 import { h, plate, recorder, pushbutton } from "../widgets.js";
 import { api } from "../api.js";
 import * as sound from "../sound.js";
@@ -5,7 +6,7 @@ import { settings } from "../settings.js";
 
 export const id = "computer";
 export const title = "Plant Computer";
-export const windows = [["training", "TRAINING MODE: RPS BYPASSED"], ["", ""], ["", ""], ["", ""]];
+export const windows = [["training", "TRAINING MODE: RPS BYPASSED"], ["ic_scale", "I&C NOT SCALED FOR CORE SIZE"], ["", ""], ["", ""]];
 
 function fmtTime(s) {
   s = Math.floor(s);
@@ -25,7 +26,7 @@ export function build(root, ctx) {
     ]),
     recorder("SECONDARY / GENERATOR", [
       { tag: "sg_level_pct", label: "SG lvl %", color: "#1f8a3a", min: 0, max: 100 },
-      { tag: "gross_mwe", label: "MWe 0–1300", color: "#d6261c", min: 0, max: 1300 },
+      { tag: "gross_mwe", label: `MWe 0–${mweScale()}`, color: "#d6261c", min: 0, max: mweScale() },
       { tag: "turbine_speed_rpm", label: "rpm 0–2000", color: "#1c5bd6", min: 0, max: 2000 },
     ]),
   ];

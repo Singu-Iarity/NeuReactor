@@ -112,6 +112,21 @@ Open the **Career** tab and choose a start year and difficulty.
    projects to unlock it early. Major components can only be swapped during
    an outage; controllers and I&C hardware anytime.
 
+4. **Unit size.** The reactor core sets the unit size: 600 MWe (121 fuel
+   assemblies, 29 control rods), 900 MWe (157, 41), 1150 MWe (193, 53) or
+   1300 MWe (241, 69). Sizes arrive over the years (600 MWe 1965, 900 MWe
+   1968, 1150 MWe 1972, 1300 MWe 1982).
+   - Every other component (except the board instruments) also comes in a
+     size. Anything smaller than the core derates the unit to that
+     component's rating; rod drives smaller than the core cannot move its
+     rods.
+   - A bigger core is bought in an outage. The unit is rebuilt at the new
+     size at hot standby, and the plant computers and automation need an
+     I&C rescaling package (priced into the purchase). Coupled components
+     of different sizes need size adapters.
+   - Pick a size on each shop card. Untick "Confirm each purchase" to buy
+     with one click.
+
 Use the 1000× / 5000× time buttons to let research and calendar time pass.
 There is no save game yet; a career lasts as long as the server runs.
 
@@ -166,6 +181,10 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
     - In career, revenue is better when net output stays on demand.
 
 ## What's simulated today (PWR)
+
+- Four unit sizes (600 / 900 / 1150 / 1300 MWe) with scaled power, flow,
+  volumes, pumps, house load and core layouts; sandbox size switch on the
+  Equipment tab
 
 - Point kinetics with 6 delayed-neutron groups (implicit, stable at any step)
 - Doppler, moderator, boron, rod (S-curve), xenon-135 and samarium-149 reactivity

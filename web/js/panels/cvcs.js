@@ -1,3 +1,4 @@
+import { rating, scaled } from "../rating.js";
 import { h, plate, roundMeter, edgewise, readout, selector, springSwitch, maStation } from "../widgets.js";
 
 export const id = "cvcs";
@@ -15,10 +16,10 @@ export function build(root, ctx) {
   const bMa = maStation("AUTO MAKEUP (BORON)", { module: "boron_control", spKey: ["band_low_steps", "band_high_steps"], spLabel: "ROD BAND LOW", spStep: 5, digits: 0 }, ctx);
   const chMa = maStation("PZR LEVEL / CHARGING", {
     module: "pressurizer_level", pvTag: "pzr_level_pct", spTag: "pzr_level_program_pct", spKey: ["level_noload_pct", "level_full_pct"], spLabel: "LEVEL PROGRAM", spStep: 0.5, devSpan: 10,
-    outTag: "charging_kg_s", outMax: 20, outDigits: 1, outCmd: v => ({ type: "set_charging", kg_s: v }), outStep: 0.5,
+    outTag: "charging_kg_s", outMax: rating.thermal / 3411 * 20, outDigits: 1, outCmd: v => ({ type: "set_charging", kg_s: v }), outStep: 0.5,
   }, ctx);
-  const charging = edgewise("CHARGING FLOW", { min: 0, max: 20, unit: "kg/s", major: 4 });
-  const letdown = edgewise("LETDOWN FLOW", { min: 0, max: 15, unit: "kg/s", major: 3 });
+  const charging = edgewise("CHARGING FLOW", { min: 0, max: scaled(20), unit: "kg/s", major: 4 });
+  const letdown = edgewise("LETDOWN FLOW", { min: 0, max: scaled(15), unit: "kg/s", major: 3 });
   const ldRl = springSwitch("LETDOWN", {
     lo: "LESS", hi: "MORE", repeat: 300,
     onHold: dir => ctx.send({ type: "set_letdown", kg_s: Math.max(0, Math.min(15, ctx.t().readings.letdown_kg_s + dir * 0.5)) }),

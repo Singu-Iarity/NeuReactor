@@ -8,6 +8,7 @@
 //                 EDG 1 ─[edg1]─┘                   └─[edg2]─ EDG 2
 //   SAFETY 1/2 ── chargers ── 125 V DC ── battery
 
+import { rating } from "../rating.js";
 import { h, plate, roundMeter, edgewise, readout, jhandle, lamp, pushbutton, vbar, maStation } from "../widgets.js";
 import { api, toast } from "../api.js";
 import { play } from "../sound.js";
@@ -137,8 +138,8 @@ export function build(root, ctx) {
     setBreaker(name, !e.breakers[name]);
   });
 
-  const sutM = roundMeter("STARTUP XFMR LOAD", { min: 0, max: 80, unit: "MW", major: 8, digits: 1, bands: [{ from: 50, to: 60, c: "yellow" }, { from: 60, to: 80, c: "red" }] });
-  const uatM = roundMeter("UNIT AUX XFMR LOAD", { min: 0, max: 120, unit: "MW", major: 6, digits: 1, bands: [{ from: 80, to: 96, c: "yellow" }, { from: 96, to: 120, c: "red" }] });
+  const sutM = roundMeter("STARTUP XFMR LOAD", { min: 0, max: 80 * rating.scale, unit: "MW", major: 8, digits: 1, bands: [{ from: 50 * rating.scale, to: 60 * rating.scale, c: "yellow" }, { from: 60 * rating.scale, to: 80 * rating.scale, c: "red" }] });
+  const uatM = roundMeter("UNIT AUX XFMR LOAD", { min: 0, max: 120 * rating.scale, unit: "MW", major: 6, digits: 1, bands: [{ from: 80 * rating.scale, to: 96 * rating.scale, c: "yellow" }, { from: 96 * rating.scale, to: 120 * rating.scale, c: "red" }] });
   const house = readout("HOUSE LOAD [MW]", { digits: 1, size: "big" });
   const imp = readout("GRID IMPORT [MW]", { digits: 1 });
   const reset = pushbutton("XFMR LOCKOUT RESET (86)", { color: "amber", onPress: () => ctx.send({ type: "reset_transformers" }) });

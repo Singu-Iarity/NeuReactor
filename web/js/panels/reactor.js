@@ -9,7 +9,7 @@ export const windows = [
   ["rx_trip", "REACTOR TRIP"], ["rod_auto", "ROD CONTROL IN AUTO"], ["rod_manual", "ROD CONTROL IN MANUAL"], ["rods_moving", "RODS MOVING"], ["critical", "REACTOR CRITICAL"], ["sur", "HIGH STARTUP RATE"],
   ["sd_not_out", "SHUTDOWN BANKS NOT FULLY WITHDRAWN"], ["rod_block", "ROD WITHDRAWAL BLOCKED"], ["rod_ins_lo", "ROD INSERTION LIMIT LO"], ["rod_ins_lolo", "ROD INSERTION LIMIT LO-LO"], ["short_period", "SHORT PERIOD"], ["nis_dev", "NIS PR CHANNEL DEVIATION"],
   ["p6", "P-6 IR PERMISSIVE"], ["p10", "P-10 PR PERMISSIVE"], ["sr_block_permitted", "SR BLOCK PERMITTED"], ["sr_blocked", "SR TRIP BLOCKED / HV OFF"], ["ir_blocked", "IR TRIP BLOCKED"], ["pr_low_blocked", "PR LO SETPT TRIP BLOCKED"],
-  ["rod_dev", "ROD GROUP DEVIATION"], ["qptr", "QUADRANT POWER TILT"], ["balancer", "ROD BALANCER ACTIVE"], ["rpc_auto", "REACTOR POWER CONTROL IN AUTO"], ["", ""], ["", ""],
+  ["rod_dev", "ROD GROUP DEVIATION"], ["qptr", "QUADRANT POWER TILT"], ["balancer", "ROD BALANCER ACTIVE"], ["rpc_auto", "REACTOR POWER CONTROL IN AUTO"], ["crdm_size", "ROD DRIVES UNDERSIZED FOR CORE"], ["", ""],
 ];
 
 const FIRST_OUT = [

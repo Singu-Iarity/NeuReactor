@@ -1,3 +1,4 @@
+import { scaled } from "../rating.js";
 import { h, plate, roundMeter, edgewise, readout, jhandle, maStation } from "../widgets.js";
 
 export const id = "steam";
@@ -13,8 +14,8 @@ export const windows = [
 export function build(root, ctx) {
   const lvl = roundMeter("SG LEVEL (NR)", { min: 0, max: 100, unit: "%", bands: [{ from: 0, to: 12, c: "red" }, { from: 75, to: 100, c: "yellow" }] });
   const press = roundMeter("STEAM PRESSURE", { min: 4, max: 9, unit: "MPa", major: 5, digits: 2, bands: [{ from: 7.85, to: 8.3, c: "yellow" }, { from: 8.3, to: 9, c: "red" }] });
-  const steam = edgewise("STEAM FLOW", { min: 0, max: 2500, unit: "kg/s", major: 5, digits: 0 });
-  const feed = edgewise("FEED FLOW", { min: 0, max: 2500, unit: "kg/s", major: 5, digits: 0 });
+  const steam = edgewise("STEAM FLOW", { min: 0, max: scaled(2500), unit: "kg/s", major: 5, digits: 0 });
+  const feed = edgewise("FEED FLOW", { min: 0, max: scaled(2500), unit: "kg/s", major: 5, digits: 0 });
   const ftemp = edgewise("FEED TEMP", { min: 0, max: 300, unit: "°C", major: 6, digits: 0 });
   const total = readout("TOTAL STEAM FLOW [kg/s]", { digits: 0 });
   const msiv = jhandle("MAIN STEAM ISOLATION", {

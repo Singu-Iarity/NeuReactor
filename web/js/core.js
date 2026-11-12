@@ -1,73 +1,49 @@
-// Top-down core map: a 15×15 four-loop PWR core (193 fuel assemblies) with
-// 53 rod cluster control assemblies (RCCAs). Each RCCA belongs to a bank and
-// to group 1 (quadrants 1 & 3) or group 2 (quadrants 2 & 4).
+// Top-down core map. The layout comes from the server and depends on the
+// unit size (121 to 241 fuel assemblies, 29 to 69 rod cluster control
+// assemblies). Each RCCA belongs to a bank and to group 1 (quadrants 1 & 3)
+// or group 2 (quadrants 2 & 4).
 
 import { h, tween } from "./widgets.js";
-
-const N = 15, C = 7;
-// Assemblies per row (core outline).
-const ROW_WIDTH = [7, 11, 13, 13, 15, 15, 15, 15, 15, 15, 15, 13, 13, 11, 7];
-
-/** Orbits of symmetric RCCA locations (dx, dy from centre) → bank. */
-const ORBITS = [
-  [[0, 0], "D"], [[2, 2], "D"],
-  [[2, 0], "C"], [[4, 4], "C"],
-  [[4, 0], "B"], [[6, 0], "B"],
-  [[4, 2], "A"],
-  [[6, 2], "SA"], [[3, 1], "SA"],
-  [[6, 4], "SB"],
-];
-
-function orbit([dx, dy]) {
-  const pts = new Set();
-  for (const [a, b] of [[dx, dy], [dy, dx]]) {
-    for (const sx of [1, -1]) for (const sy of [1, -1]) pts.add(`${a * sx},${b * sy}`);
-  }
-  return [...pts].map(p => p.split(",").map(Number));
-}
-
-export const RCCAS = [];
-for (const [d, bank] of ORBITS) {
-  for (const [dx, dy] of orbit(d)) {
-    // Group 1: quadrants 1 and 3 (and the +y axis / centre); group 2: 2 and 4.
-    const group = dx === 0 ? 1 : dy === 0 ? 2 : dx * dy > 0 ? 1 : 2;
-    RCCAS.push({ x: C + dx, y: C - dy, bank, group, id: `${String.fromCharCode(72 + dy)}${C + dx + 1}` });
-  }
-}
-
-function inCore(x, y) {
-  const w = ROW_WIDTH[y];
-  return Math.abs(x - C) <= (w - 1) / 2;
-}
+import { api } from "./api.js";
 
 /**
  * Builds the core map. `onPick(rcca)` fires when a rod is clicked.
  * Analog room: a field of small selsyn dials; digital: coloured cells.
  */
 export function coreMap(onPick) {
-  const grid = h("div", { class: "core-grid", style: `--n:${N}` });
+  const grid = h("div", { class: "core-grid" });
   const cells = [];
   const all = [];   // every fuel assembly, row-major (matches the server's CET order)
   const tLabel = el => { const l = h("div", { class: "cet-num" }); el.append(l); all.push({ el, l }); return el; };
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      if (!inCore(x, y)) { grid.append(h("div", { class: "core-cell empty" })); continue; }
-      const rod = RCCAS.find(r => r.x === x && r.y === y);
-      if (!rod) { grid.append(tLabel(h("div", { class: "core-cell fuel" }))); continue; }
-      const ptr = h("div", { class: "selsyn-ptr" });
-      const num = h("div", { class: "rod-num" }, "0");
-      const cell = h("button", { class: `core-cell rod bank-${rod.bank}`, title: `${rod.id}: bank ${rod.bank}, group ${rod.group}`, onclick: () => onPick?.(rod) },
-        h("div", { class: "selsyn only-analog" }, ptr), num, h("div", { class: "rod-tag" }, `${rod.bank}${rod.group}`));
-      const set = tween(v => {
-        ptr.style.transform = `rotate(${-135 + 270 * v / 228}deg)`;
-        cell.style.setProperty("--ins", `${(1 - v / 228) * 100}%`);
-      }, 0.2);
-      cells.push({ rod, cell, num, set });
-      grid.append(tLabel(cell));
+  const title = h("div", { class: "core-legend" }, "");
+  // The layout (assemblies, RCCA banks and groups) comes from the server
+  // and depends on the unit size.
+  api("/core_layout").then(layout => {
+    const N = layout.grid;
+    grid.style.setProperty("--n", N);
+    title.textContent = `${layout.assemblies.length} FUEL ASSEMBLIES · ${layout.rccas} RCCAs`;
+    const at = new Map(layout.assemblies.map(a => [`${a.x},${a.y}`, a]));
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const a = at.get(`${x},${y}`);
+        if (!a) { grid.append(h("div", { class: "core-cell empty" })); continue; }
+        if (!a.rcca) { grid.append(tLabel(h("div", { class: "core-cell fuel" }))); continue; }
+        const rod = { x, y, bank: a.rcca[0], group: a.rcca[1], id: `${String.fromCharCode(65 + y)}${x + 1}` };
+        const ptr = h("div", { class: "selsyn-ptr" });
+        const num = h("div", { class: "rod-num" }, "0");
+        const cell = h("button", { class: `core-cell rod bank-${rod.bank}`, title: `${rod.id}: bank ${rod.bank}, group ${rod.group}`, onclick: () => onPick?.(rod) },
+          h("div", { class: "selsyn only-analog" }, ptr), num, h("div", { class: "rod-tag" }, `${rod.bank}${rod.group}`));
+        const set = tween(v => {
+          ptr.style.transform = `rotate(${-135 + 270 * v / 228}deg)`;
+          cell.style.setProperty("--ins", `${(1 - v / 228) * 100}%`);
+        }, 0.2);
+        cells.push({ rod, cell, num, set });
+        grid.append(tLabel(cell));
+      }
     }
-  }
+  });
   const legend = h("div", { class: "core-legend" }, "SELSYN ROD POSITION · steps withdrawn (0 = fully inserted, 228 = out)");
-  const el = h("div", { class: "coremap" }, grid, legend);
+  const el = h("div", { class: "coremap" }, title, grid, legend);
   let tempMode = false;
   return {
     el,

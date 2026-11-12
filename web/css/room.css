@@ -622,3 +622,13 @@ body.bf .mp-win.flash { background: #3a3424; color: #6f6650; box-shadow: none; }
 .req-status.ok { background: #1f5a2c; color: #d8ffe0; }
 .req-status.warn { background: #6a4d10; color: #ffe9b0; }
 .req-status.bad { background: #6a1410; color: #ffd6d0; }
+
+/* career shop: size picker, confirm toggle */
+.shop-toggle { display: inline-flex; align-items: center; gap: 4px; font: 600 11px sans-serif; margin: 4px 0; cursor: pointer; }
+.size-pick { display: flex; gap: 3px; align-items: center; margin: 4px 0; font: 700 8px sans-serif; color: #666; }
+.size-pick > span { margin-right: 4px; }
+.size-btn { font: 700 9px sans-serif; padding: 2px 6px; border: 1px solid #333; border-radius: 2px; background: #ddd8c8; cursor: pointer; }
+.size-btn.unit { border-color: #1f5a2c; border-width: 2px; }
+.size-btn.on { background: #f2b33a; box-shadow: 0 0 6px #f2b33a; }
+.card.warn { outline: 2px solid #c98a12; }
+.sel-row button.unit { box-shadow: inset 0 -2px 0 #3bd16a; }

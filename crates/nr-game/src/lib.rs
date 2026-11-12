@@ -13,7 +13,7 @@ pub mod station;
 pub use station::{Call, Station};
 
 use nr_api::equipment::{
-    self, Component, Controller, ConversionKit, Equipment, Era, Slot, Tier, Unlock,
+    self, Component, Controller, ConversionKit, Equipment, Era, Slot, Tier, UnitSize, Unlock,
 };
 use nr_api::{modules, upgrades, GameMode, ModuleId, ModuleMode, UpgradeId};
 use nr_reactors::Pwr;
@@ -78,6 +78,9 @@ pub enum Purchase {
         slot: Slot,
         era: Era,
         tier: Tier,
+        /// Size class (defaults to the unit's current size).
+        #[serde(default)]
+        size: Option<UnitSize>,
     },
     Controller {
         module: ModuleId,
@@ -151,7 +154,8 @@ pub const DIESEL_PER_L: f64 = 1.1;
 pub fn hourly_costs(plant: &Pwr, price_mwh: f64, om_per_day: f64) -> Bills {
     let cw = plant.condenser.cw_pumps.iter().filter(|r| **r).count() as f64;
     Bills {
-        fuel: plant.q_core.max(0.0) / 1e6 * FUEL_PER_MWH_T,
+        fuel: plant.q_core.max(0.0) / 1e6 * FUEL_PER_MWH_T
+            / plant.automation.equipment.perf(Slot::ReactorCore),
         water: WATER_BASE_H + WATER_PER_PUMP_H * cw,
         grid_power: plant.elec.import_mw * price_mwh * IMPORT_MARKUP,
         maintenance: 0.6 * om_per_day / 24.0,
@@ -356,6 +360,26 @@ impl Career {
         Ok(())
     }
 
+    /// The unit at hot standby, sized by its core, with this career's
+    /// equipment and every module in MANUAL.
+    fn fresh_plant(&self) -> Pwr {
+        let mut plant = Pwr::hot_standby_sized(self.equipment.unit_size());
+        plant.automation.game_mode = GameMode::Career;
+        for m in modules::CATALOG {
+            plant.automation.modes.insert(m.id, ModuleMode::Manual);
+        }
+        self.push_to_plant(&mut plant);
+        plant
+    }
+
+    /// Size of a component purchase: as asked, or matched to the unit.
+    fn size_for(&self, slot: Slot, size: Option<UnitSize>) -> UnitSize {
+        if !equipment::slot_is_sized(slot) {
+            return UnitSize::default();
+        }
+        size.unwrap_or_else(|| self.equipment.unit_size())
+    }
+
     /// Charge a fine (e.g. synchronising without grid permission).
     pub fn fine(&mut self, amount: f64, why: &str) {
         self.money -= amount;
@@ -397,9 +421,19 @@ impl Career {
     pub fn quote(&self, p: Purchase) -> Quote {
         let mut after = self.equipment.clone();
         let (price, refund, owned, label, perf) = match p {
-            Purchase::Component { slot, era, tier } => {
-                let c = Component::new(era, tier);
+            Purchase::Component {
+                slot,
+                era,
+                tier,
+                size,
+            } => {
+                let c = Component::sized(era, tier, self.size_for(slot, size));
                 let old = after.components.insert(slot, c);
+                // A core bought during construction is the design size:
+                // the I&C is engineered for it from the start.
+                if slot == Slot::ReactorCore && self.phase == Phase::Build {
+                    after.ic_size = c.size;
+                }
                 let refund = old
                     .map(|o| o.price(slot) * self.refund_rate())
                     .unwrap_or(0.0);
@@ -447,6 +481,13 @@ impl Career {
             .collect();
         let kit_cost: f64 = kits.iter().map(|k| k.price).sum();
         let u = Self::unlock_for(p);
+        // Unit sizes arrive over the years (bigger units later).
+        let size_year = match p {
+            Purchase::Component { slot, size, .. } if equipment::slot_is_sized(slot) => {
+                self.size_for(slot, size).year()
+            }
+            _ => i32::MIN,
+        };
         Quote {
             purchase: p,
             label,
@@ -458,8 +499,8 @@ impl Career {
             },
             kits,
             refund,
-            available: self.available(u),
-            year: u.year(),
+            available: self.available(u) && self.year() >= size_year,
+            year: u.year().max(size_year),
             owned,
             perf,
         }
@@ -494,10 +535,31 @@ impl Career {
             self.equipment.kits.insert(k.key.clone());
         }
         match p {
-            Purchase::Component { slot, era, tier } => {
+            Purchase::Component {
+                slot,
+                era,
+                tier,
+                size,
+            } => {
+                let size = self.size_for(slot, size);
+                let old_unit = self.equipment.unit_size();
                 self.equipment
                     .components
-                    .insert(slot, Component::new(era, tier));
+                    .insert(slot, Component::sized(era, tier, size));
+                if slot == Slot::ReactorCore {
+                    if self.phase == Phase::Build {
+                        self.equipment.ic_size = size;
+                    } else if size != old_unit {
+                        // New core: the unit is rebuilt (refuelled) at the
+                        // new size, at hot standby.
+                        *plant = self.fresh_plant();
+                        self.notify(format!(
+                            "New {} core installed: {} fuel assemblies. Re-scale any undersized components before running at full power.",
+                            size.label(),
+                            size.assemblies()
+                        ));
+                    }
+                }
             }
             Purchase::Controller { module, controller } => {
                 self.equipment.controllers.insert(module, controller);
@@ -539,17 +601,30 @@ impl Career {
                 name: s.name.into(),
                 effect: s.effect.into(),
                 installed: self.equipment.components.get(&s.slot).copied(),
-                options: Era::ALL
-                    .iter()
-                    .flat_map(|era| Tier::ALL.iter().map(move |tier| (*era, *tier)))
-                    .map(|(era, tier)| {
-                        self.quote(Purchase::Component {
-                            slot: s.slot,
-                            era,
-                            tier,
+                sized: equipment::slot_is_sized(s.slot),
+                options: {
+                    let sizes: Vec<UnitSize> = if equipment::slot_is_sized(s.slot) {
+                        UnitSize::ALL.to_vec()
+                    } else {
+                        vec![UnitSize::default()]
+                    };
+                    sizes
+                        .into_iter()
+                        .flat_map(|size| {
+                            Era::ALL.iter().flat_map(move |era| {
+                                Tier::ALL.iter().map(move |tier| (size, *era, *tier))
+                            })
                         })
-                    })
-                    .collect(),
+                        .map(|(size, era, tier)| {
+                            self.quote(Purchase::Component {
+                                slot: s.slot,
+                                era,
+                                tier,
+                                size: Some(size),
+                            })
+                        })
+                        .collect()
+                },
             })
             .collect();
         let controllers = modules::CATALOG
@@ -682,12 +757,7 @@ impl Career {
             return Err(format!("still to equip: {}", names.join(", ")));
         }
         self.phase = Phase::Operating;
-        let mut plant = Pwr::hot_standby();
-        plant.automation.game_mode = GameMode::Career;
-        for m in modules::CATALOG {
-            plant.automation.modes.insert(m.id, ModuleMode::Manual);
-        }
-        self.push_to_plant(&mut plant);
+        let plant = self.fresh_plant();
         self.notify(format!(
             "Unit commissioned with ${:.0}M remaining. The reactor is at hot standby: take it critical and sell power at ${:.0}/MWh.",
             self.money / 1e6,
@@ -796,6 +866,7 @@ impl Career {
             costs_total: self.costs_total,
             missing_components: self.missing_components(),
             notifications: self.notifications.iter().rev().take(60).cloned().collect(),
+            unit_size: self.equipment.unit_size(),
             bills: self.bills.clone(),
             month_revenue: self.month_revenue,
             statements: self.statements.iter().rev().take(12).cloned().collect(),
@@ -808,8 +879,14 @@ impl Career {
 
 fn purchase_name(p: Purchase) -> String {
     match p {
-        Purchase::Component { slot, era, tier } => {
-            format!("{era:?} {tier:?} {}", equipment::slot_info(slot).name)
+        Purchase::Component {
+            slot,
+            era,
+            tier,
+            size,
+        } => {
+            let size = size.map(|s| format!(" {}", s.label())).unwrap_or_default();
+            format!("{era:?} {tier:?}{size} {}", equipment::slot_info(slot).name)
         }
         Purchase::Controller { module, controller } => {
             format!("{} ({})", modules::info(module).name, controller.label())
@@ -823,6 +900,8 @@ pub struct ShopSlot {
     pub slot: Slot,
     pub name: String,
     pub effect: String,
+    /// Comes in size classes (everything but the board instruments).
+    pub sized: bool,
     pub installed: Option<Component>,
     pub options: Vec<Quote>,
 }
@@ -868,6 +947,7 @@ pub struct CareerView {
     pub costs_total: f64,
     pub missing_components: Vec<Slot>,
     pub notifications: Vec<Notification>,
+    pub unit_size: UnitSize,
     pub bills: Bills,
     pub month_revenue: f64,
     pub statements: Vec<Statement>,
