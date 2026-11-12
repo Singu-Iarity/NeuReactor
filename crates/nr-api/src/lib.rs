@@ -19,7 +19,7 @@ pub mod upgrades;
 pub use commands::{
     Actuator, BorationMode, Command, CommandKind, ControlRoomGeneration, NisBlock, RodDirection,
 };
-pub use equipment::{Component, Controller, Equipment, Era, Slot, Tier, Unlock};
+pub use equipment::{Component, Controller, Equipment, Era, Slot, Tier, UnitSize, Unlock};
 pub use modules::{ModuleId, ModuleInfo, ModuleMode, CATALOG};
 pub use policy::{authorize, can_read, Denied, GameMode, Origin, PolicyContext, Scope};
 pub use telemetry::{Alarm, ModuleView, NisView, RodView, Severity, Telemetry, UpgradeView};

@@ -15,7 +15,7 @@
 //! * turbine-generator shaft dynamics and grid synchronisation.
 
 use crate::plant::{AutomationState, PlantEvent};
-use nr_api::equipment::{Controller, Equipment, Slot};
+use nr_api::equipment::{Controller, Equipment, Slot, UnitSize};
 use nr_api::{
     authorize, modules, Actuator, Alarm, BorationMode, Command, CommandKind, ControlRoomGeneration,
     Denied, GameMode, ModuleId, ModuleMode, ModuleView, NisBlock, NisView, Origin, PolicyContext,
@@ -127,6 +127,37 @@ impl Default for PwrParams {
             ir_amps_per_n: 8.0e-4,
             ir_floor_amps: 1.0e-11,
         }
+    }
+}
+
+impl PwrParams {
+    /// Design parameters for a unit size: extensive quantities (power, flow,
+    /// volumes, heat capacities, pump and heater capacities, house load)
+    /// scale with rated thermal power; temperatures, pressures and
+    /// reactivity coefficients stay the same.
+    pub fn for_size(size: UnitSize) -> Self {
+        let mut p = Self::default();
+        let s = size.scale();
+        p.thermal_power = size.thermal_mw() * 1e6;
+        p.gross_mwe = size.mwe();
+        p.generator_rating = size.mwe() * 1.13e6;
+        p.flow_nominal *= s;
+        p.vol_core *= s;
+        p.vol_hot *= s;
+        p.vol_sg *= s;
+        p.vol_cold *= s;
+        p.vol_pzr *= s;
+        p.fuel_heat_capacity *= s;
+        p.heater_power *= s;
+        p.pzr_loss *= s;
+        p.pzr_capacitance *= s;
+        p.spray_max *= s;
+        p.letdown_nominal *= s;
+        p.charging_max *= s;
+        p.sg_mass_nominal *= s;
+        p.sg_capacitance *= s;
+        p.house_load_mwe *= s;
+        p
     }
 }
 
@@ -378,7 +409,12 @@ pub struct Reactivity {
 impl Pwr {
     /// Plant at equilibrium 100 % power with the main control loops in AUTO.
     pub fn full_power() -> Self {
-        let p = PwrParams::default();
+        Self::full_power_sized(UnitSize::default())
+    }
+
+    /// Full power for a unit size, with every component sized to match.
+    pub fn full_power_sized(size: UnitSize) -> Self {
+        let p = PwrParams::for_size(size);
         let q = p.thermal_power;
         let w = p.flow_nominal;
         let dt_core = q / (w * p.cp_primary);
@@ -523,6 +559,8 @@ impl Pwr {
         ] {
             plant.automation.modes.insert(m, ModuleMode::Auto);
         }
+        plant.automation.equipment = nr_api::Equipment::standard_sized(size);
+        plant.apply_size();
         let d = plant.load_demand();
         plant.elec.settle(&d);
         plant.elec.step(&d, plant.tg.breaker, 0.0);
@@ -535,7 +573,12 @@ impl Pwr {
     /// operator must take the reactor critical on the source range and
     /// work up through the intermediate and power ranges.
     pub fn hot_standby() -> Self {
-        let mut plant = Self::full_power();
+        Self::hot_standby_sized(UnitSize::default())
+    }
+
+    /// Hot standby for a unit size.
+    pub fn hot_standby_sized(size: UnitSize) -> Self {
+        let mut plant = Self::full_power_sized(size);
         plant.scenario = "hot_standby".into();
         let week = 7.0 * 86_400.0;
         plant.decay.step(0.0, week);
@@ -587,6 +630,7 @@ impl Pwr {
         plant.grid_permission = false;
         plant.rod_selection = "SA".into();
         plant.elec = Electrical::shutdown();
+        plant.apply_size();
         plant.tg.breaker = false;
         plant.prev_breaker = false;
         plant.tg.field_breaker = false;
@@ -623,11 +667,28 @@ impl Pwr {
     }
 
     pub fn from_scenario(name: &str) -> Option<Self> {
+        Self::from_scenario_sized(name, UnitSize::default())
+    }
+
+    pub fn from_scenario_sized(name: &str, size: UnitSize) -> Option<Self> {
         match name {
-            "full_power" => Some(Self::full_power()),
-            "hot_standby" => Some(Self::hot_standby()),
+            "full_power" => Some(Self::full_power_sized(size)),
+            "hot_standby" => Some(Self::hot_standby_sized(size)),
             _ => None,
         }
+    }
+
+    /// Unit size (the installed reactor core).
+    pub fn size(&self) -> UnitSize {
+        self.automation.equipment.unit_size()
+    }
+
+    /// Size-dependent settings of sub-systems (electrical loads, ratings).
+    fn apply_size(&mut self) {
+        let s = self.size().scale();
+        self.elec.scale = s;
+        self.elec.sut_rating = 50.0 * s;
+        self.elec.uat_rating = 80.0 * s;
     }
 
     fn turbine_cv(&self) -> f64 {
@@ -654,7 +715,7 @@ impl Pwr {
 
     fn feed_max(&self) -> f64 {
         let pumps = (self.elec.buses.bus_a as u8 + self.elec.buses.bus_b as u8) as f64 / 2.0;
-        self.p.feed_max_frac * self.automation.equipment.perf(Slot::FeedPumps) * pumps
+        self.p.feed_max_frac * self.automation.equipment.capacity(Slot::FeedPumps) * pumps
     }
 
     /// Controller setpoint error for a module, in engineering units.
@@ -836,7 +897,8 @@ impl Pwr {
 
     fn step_electrical(&mut self, dt: f64) {
         let eq = &self.automation.equipment;
-        self.elec.transformer_quality = eq.perf(Slot::StationTransformers);
+        self.elec.transformer_quality = eq.perf(Slot::StationTransformers)
+            * eq.size_ratio(Slot::StationTransformers).min(1.0).cbrt();
         self.elec.diesel_quality = eq.perf(Slot::EmergencyDiesels);
         // Diesel load sequencer: start on safety bus undervoltage, close the
         // output breaker once the diesel is up to speed.
@@ -1009,7 +1071,7 @@ impl Pwr {
             self.rcp_speed[i] += (target - self.rcp_speed[i]) * (dt / tau).min(1.0);
         }
         let forced: f64 = self.rcp_speed.iter().sum::<f64>() / 4.0
-            * self.automation.equipment.perf(Slot::CoolantPumps);
+            * self.automation.equipment.capacity(Slot::CoolantPumps);
         let q_frac = self.thermal_fraction().max(0.0);
         let natural = 0.05 * q_frac.cbrt() + 0.002;
         self.flow_frac = forced.max(natural);
@@ -1144,7 +1206,9 @@ impl Pwr {
         // steam dumped straight to the condenser.
         let q_cond = (p_avail - p_mech).max(0.0) + w_dump * (steam::hg(ps) - h_cond);
         let eq = &self.automation.equipment;
-        self.condenser.capacity = eq.perf(Slot::Condenser) * eq.perf(Slot::CirculatingWater);
+        self.condenser.capacity = eq.capacity(Slot::Condenser)
+            * eq.capacity(Slot::CirculatingWater)
+            * self.size().scale();
         self.condenser.air_removal = eq.perf(Slot::AirRemoval).powi(4);
         self.deaerator.quality = eq.perf(Slot::Deaerator);
         self.condenser.step(q_cond, ps, msiv, dt);
@@ -1688,9 +1752,27 @@ impl Pwr {
             // on-line they only open on a load rejection.
             let hold_noload = self.reactor_tripped || !self.tg.breaker;
             let db = self.bias(ModuleId::SteamDump);
-            self.steam_dump = self
+            let demand = self
                 .dump_ctl
                 .update(tavg, tref + db, noload + db, hold_noload, dt);
+            // Dumps interlocked shut (no condenser vacuum / circulating
+            // water, C-9, or MSIVs closed): hold the controller at zero so
+            // it does not wind up and slam the dumps open when C-9 clears.
+            let blocked = !self.msiv_open || !self.condenser.available();
+            // Valve stroke: about 10 s to fully open in modulating service.
+            let pos = if blocked {
+                0.0
+            } else {
+                clamp(
+                    demand,
+                    self.steam_dump - 0.5 * dt,
+                    self.steam_dump + 0.1 * dt,
+                )
+            };
+            if blocked {
+                self.dump_ctl.track(0.0);
+            }
+            self.steam_dump = pos;
         }
     }
 
@@ -2156,13 +2238,10 @@ impl Pwr {
                 self.set_upgrade(*upgrade, *installed)
             }
             Command::SetComponent { slot, era, tier } => {
-                self.automation.equipment.components.insert(
-                    *slot,
-                    nr_api::Component {
-                        era: *era,
-                        tier: *tier,
-                    },
-                );
+                self.automation
+                    .equipment
+                    .components
+                    .insert(*slot, nr_api::Component::new(*era, *tier));
                 self.events.push(PlantEvent::info(&format!(
                     "{} replaced: {:?} {:?}",
                     nr_api::equipment::slot_info(*slot).name,

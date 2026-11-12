@@ -209,14 +209,17 @@ fn analog_out_of_phase_close_damages_and_trips() {
 #[test]
 fn sync_check_blocks_and_lamp_flashes() {
     let mut p = startup_to_sync();
+    // Synchroniser module in MANUAL so it never closes the breaker itself;
+    // sync-check stays active through the turbine computer and generator
+    // sync interface installed in sandbox.
     op(
         &mut p,
         Command::SetModuleMode {
             module: ModuleId::GeneratorSync,
-            mode: ModuleMode::Auto,
+            mode: ModuleMode::Manual,
         },
     );
-    // Hold off the auto close by keeping speed off target: governor manual.
+    // Governor in manual too, so the speed can be pushed off synchronous.
     op(
         &mut p,
         Command::SetModuleMode {

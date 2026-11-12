@@ -130,6 +130,13 @@ pub struct Electrical {
     /// Equipment quality multipliers.
     pub transformer_quality: f64,
     pub diesel_quality: f64,
+    /// Plant size relative to the 1150 MWe reference (scales motor loads).
+    #[serde(default = "one")]
+    pub scale: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 const BASE_A: f64 = 4.0;
@@ -201,6 +208,7 @@ impl Electrical {
             prev: LoadDemand::default(),
             transformer_quality: 1.0,
             diesel_quality: 1.0,
+            scale: 1.0,
         }
     }
 
@@ -252,13 +260,13 @@ impl Electrical {
         for i in 0..4 {
             if demand.rcps[i] && !self.prev.rcps[i] {
                 self.inrush
-                    .push((8.0, 5.0 * RCP_MW, if i < 2 { 0 } else { 1 }));
+                    .push((8.0, 5.0 * RCP_MW * self.scale, if i < 2 { 0 } else { 1 }));
             }
         }
         for i in 0..3 {
             if demand.cw_pumps[i] && !self.prev.cw_pumps[i] {
                 self.inrush
-                    .push((5.0, 4.0 * CW_MW, if i < 2 { 0 } else { 1 }));
+                    .push((5.0, 4.0 * CW_MW * self.scale, if i < 2 { 0 } else { 1 }));
             }
         }
         self.prev = demand.clone();
@@ -353,10 +361,14 @@ impl Electrical {
                 }
             }
         }
-        let load_s1 = BASE_SAFETY
-            + HEATER_MW * demand.pzr_heaters.clamp(0.0, 1.0)
-            + if demand.charging { CHARGING_MW } else { 0.0 };
-        let load_s2 = BASE_SAFETY;
+        let k = self.scale;
+        load_a *= k;
+        load_b *= k;
+        let load_s1 = k
+            * (BASE_SAFETY
+                + HEATER_MW * demand.pzr_heaters.clamp(0.0, 1.0)
+                + if demand.charging { CHARGING_MW } else { 0.0 });
+        let load_s2 = k * BASE_SAFETY;
         for r in &self.inrush {
             if r.2 == 0 {
                 load_a += r.1

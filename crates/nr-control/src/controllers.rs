@@ -194,6 +194,12 @@ impl SteamDumpControl {
         let target = if tripped { noload } else { tref + 2.8 };
         self.pi.update(tavg - target, dt)
     }
+
+    /// Anti-windup: make the controller output equal the actual valve
+    /// position (e.g. 0 while the dumps are interlocked shut).
+    pub fn track(&mut self, position: f64) {
+        self.pi.track(position);
+    }
 }
 
 /// Turbine governor. With the generator breaker open it is a speed

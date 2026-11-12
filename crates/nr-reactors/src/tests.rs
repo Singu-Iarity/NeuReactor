@@ -331,3 +331,41 @@ fn low_pzr_level_in_manual_needs_operator_charging() {
     op(&mut p, Command::SetLetdown { kg_s: 7.5 });
     assert!(!p.letdown_isolated);
 }
+
+#[test]
+fn every_unit_size_is_steady_at_full_power_and_standby() {
+    use nr_api::UnitSize;
+    for size in UnitSize::ALL {
+        let mut p = Pwr::full_power_sized(size);
+        p.advance(900.0);
+        eprintln!(
+            "{:?}: power {:.1}% gross {:.0} MWe (rated {:.0}) house {:.1} tavg {:.1} pzr {:.1}% P {:.2} MPa trip={}",
+            size,
+            p.thermal_fraction() * 100.0,
+            p.gross_mwe,
+            size.mwe(),
+            p.house_load(),
+            p.tavg(),
+            p.pzr_level(),
+            p.pressure / 1e6,
+            p.reactor_tripped
+        );
+        assert!(!p.reactor_tripped, "{size:?} tripped: {:?}", p.trips);
+        assert!((p.thermal_fraction() - 1.0).abs() < 0.03, "{size:?} power");
+        assert!(
+            (p.gross_mwe / size.mwe() - 1.0).abs() < 0.04,
+            "{size:?} output {}",
+            p.gross_mwe
+        );
+        assert!((p.tavg() - 308.6).abs() < 2.0, "{size:?} tavg");
+        assert!((p.pzr_level() - 55.0).abs() < 8.0, "{size:?} pzr level");
+        let mut s = Pwr::hot_standby_sized(size);
+        s.advance(600.0);
+        assert!(!s.reactor_tripped, "{size:?} hot standby tripped");
+        assert!(
+            (s.tavg() - 291.7).abs() < 2.0,
+            "{size:?} standby tavg {}",
+            s.tavg()
+        );
+    }
+}

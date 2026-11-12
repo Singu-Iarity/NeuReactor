@@ -52,13 +52,7 @@ impl Difficulty {
         let era = Era::of_year(year);
         let standard: f64 = equipment::SLOTS
             .iter()
-            .map(|s| {
-                Component {
-                    era,
-                    tier: Tier::Quality,
-                }
-                .price(s.slot)
-            })
+            .map(|s| Component::new(era, Tier::Quality).price(s.slot))
             .sum();
         let factor = match self {
             Difficulty::Easy => 1.4,
@@ -231,6 +225,7 @@ impl Career {
                 components: BTreeMap::new(),
                 controllers: BTreeMap::new(),
                 kits: BTreeSet::new(),
+                ic_size: Default::default(),
             },
             modules: BTreeSet::new(),
             upgrades: BTreeSet::new(),
@@ -403,7 +398,7 @@ impl Career {
         let mut after = self.equipment.clone();
         let (price, refund, owned, label, perf) = match p {
             Purchase::Component { slot, era, tier } => {
-                let c = Component { era, tier };
+                let c = Component::new(era, tier);
                 let old = after.components.insert(slot, c);
                 let refund = old
                     .map(|o| o.price(slot) * self.refund_rate())
@@ -502,7 +497,7 @@ impl Career {
             Purchase::Component { slot, era, tier } => {
                 self.equipment
                     .components
-                    .insert(slot, Component { era, tier });
+                    .insert(slot, Component::new(era, tier));
             }
             Purchase::Controller { module, controller } => {
                 self.equipment.controllers.insert(module, controller);

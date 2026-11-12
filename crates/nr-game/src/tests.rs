@@ -105,11 +105,7 @@ fn build_phase_swaps_are_refunded_and_kits_are_charged() {
         &mut plant,
     )
     .unwrap();
-    let vb = Component {
-        era: Era::Vintage,
-        tier: Tier::Basic,
-    }
-    .price(Slot::Turbine);
+    let vb = Component::new(Era::Vintage, Tier::Basic).price(Slot::Turbine);
     assert!((m0 - c.money - vb).abs() < 1.0);
     // A modern generator on a vintage turbine needs an adapter.
     let q = c.quote(Purchase::Component {

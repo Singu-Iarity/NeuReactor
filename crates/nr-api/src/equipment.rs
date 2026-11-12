@@ -66,10 +66,62 @@ impl Tier {
     }
 }
 
+/// Unit size class: rated electrical output, which sets the core (fuel
+/// assemblies and control rods) and how big every major component must be.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitSize {
+    Mwe600,
+    Mwe900,
+    #[default]
+    Mwe1150,
+    Mwe1300,
+}
+
+impl UnitSize {
+    pub const ALL: [UnitSize; 4] = [
+        UnitSize::Mwe600,
+        UnitSize::Mwe900,
+        UnitSize::Mwe1150,
+        UnitSize::Mwe1300,
+    ];
+    /// Rated gross electrical output [MWe].
+    pub fn mwe(self) -> f64 {
+        [600.0, 900.0, 1150.0, 1300.0][self as usize]
+    }
+    /// Rated core thermal power [MWt].
+    pub fn thermal_mw(self) -> f64 {
+        [1882.0, 2775.0, 3411.0, 3817.0][self as usize]
+    }
+    /// Fuel assemblies in the core.
+    pub fn assemblies(self) -> usize {
+        [121, 157, 193, 241][self as usize]
+    }
+    /// Thermal power relative to the 1150 MWe reference plant.
+    pub fn scale(self) -> f64 {
+        self.thermal_mw() / 3411.0
+    }
+    /// Bigger units cost more, but less per MW.
+    pub fn price_mult(self) -> f64 {
+        [0.62, 0.82, 1.0, 1.15][self as usize]
+    }
+    /// First year a unit of this size can be built.
+    pub fn year(self) -> i32 {
+        [1965, 1968, 1972, 1982][self as usize]
+    }
+    pub fn label(self) -> String {
+        format!("{:.0} MWe", self.mwe())
+    }
+}
+
 /// Physical component slots of a unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Slot {
+    /// Reactor core, vessel internals and fuel: defines the unit size.
+    ReactorCore,
     Turbine,
     Generator,
     Condenser,
@@ -98,6 +150,13 @@ pub struct SlotInfo {
 }
 
 pub const SLOTS: &[SlotInfo] = &[
+    SlotInfo {
+        slot: Slot::ReactorCore,
+        name: "Reactor Core, Vessel Internals & Fuel",
+        base_price: 300e6,
+        year_offset: 0,
+        effect: "Sets the unit size (fuel assemblies, control rods, rated power); fuel economy",
+    },
     SlotInfo {
         slot: Slot::StationTransformers,
         name: "Station Service Transformers (SUT/UAT)",
@@ -209,17 +268,52 @@ pub fn slot_info(s: Slot) -> &'static SlotInfo {
     SLOTS.iter().find(|i| i.slot == s).expect("slot in table")
 }
 
+/// Is this slot's equipment sized to the unit (everything but the board
+/// instruments)?
+pub fn slot_is_sized(s: Slot) -> bool {
+    s != Slot::BoardInstruments
+}
+
+/// Components whose capacity limits the unit's output when undersized.
+pub const OUTPUT_LIMITING: &[Slot] = &[
+    Slot::Turbine,
+    Slot::Generator,
+    Slot::SteamGenerators,
+    Slot::Condenser,
+    Slot::CirculatingWater,
+    Slot::FeedPumps,
+    Slot::CoolantPumps,
+    Slot::Deaerator,
+    Slot::SteamIsolation,
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Component {
     pub era: Era,
     pub tier: Tier,
+    /// Size class the component is built for.
+    #[serde(default)]
+    pub size: UnitSize,
 }
 
 impl Component {
     pub const STANDARD: Component = Component {
         era: Era::Dated,
         tier: Tier::Quality,
+        size: UnitSize::Mwe1150,
     };
+
+    pub const fn new(era: Era, tier: Tier) -> Self {
+        Component {
+            era,
+            tier,
+            size: UnitSize::Mwe1150,
+        }
+    }
+
+    pub const fn sized(era: Era, tier: Tier, size: UnitSize) -> Self {
+        Component { era, tier, size }
+    }
 
     /// Performance factor relative to a dated/quality component.
     pub fn perf(self) -> f64 {
@@ -227,7 +321,12 @@ impl Component {
     }
 
     pub fn price(self, slot: Slot) -> f64 {
-        slot_info(slot).base_price * self.era.price_mult() * self.tier.price_mult()
+        let size = if slot_is_sized(slot) {
+            self.size.price_mult()
+        } else {
+            1.0
+        };
+        slot_info(slot).base_price * self.era.price_mult() * self.tier.price_mult() * size
     }
 
     pub fn year(self, slot: Slot) -> i32 {
@@ -239,7 +338,7 @@ impl Component {
     }
 
     pub fn label(self) -> String {
-        format!("{:?} {:?}", self.era, self.tier)
+        format!("{:?} {:?} {}", self.era, self.tier, self.size.label())
     }
 }
 
@@ -380,6 +479,10 @@ pub struct Equipment {
     pub components: std::collections::BTreeMap<Slot, Component>,
     pub controllers: std::collections::BTreeMap<ModuleId, Controller>,
     pub kits: std::collections::BTreeSet<String>,
+    /// Size the plant computers, automation and instrument scaling were
+    /// engineered for. A different core size needs an I&C rescaling package.
+    #[serde(default)]
+    pub ic_size: UnitSize,
 }
 
 impl Equipment {
@@ -395,11 +498,71 @@ impl Equipment {
                 .map(|m| (m.id, Controller::Digital))
                 .collect(),
             kits: Default::default(),
+            ic_size: UnitSize::default(),
         }
+    }
+
+    /// Standard equipment, all sized for `size`.
+    pub fn standard_sized(size: UnitSize) -> Self {
+        let mut e = Self::standard();
+        for c in e.components.values_mut() {
+            c.size = size;
+        }
+        e.ic_size = size;
+        e
     }
 
     pub fn perf(&self, slot: Slot) -> f64 {
         self.components.get(&slot).map(|c| c.perf()).unwrap_or(1.0)
+    }
+
+    /// Unit size: set by the reactor core.
+    pub fn unit_size(&self) -> UnitSize {
+        self.components
+            .get(&Slot::ReactorCore)
+            .map(|c| c.size)
+            .unwrap_or_default()
+    }
+
+    /// Component capacity relative to what the core needs (1 = matched).
+    pub fn size_ratio(&self, slot: Slot) -> f64 {
+        if !slot_is_sized(slot) {
+            return 1.0;
+        }
+        match self.components.get(&slot) {
+            Some(c) => c.size.mwe() / self.unit_size().mwe(),
+            None => 1.0,
+        }
+    }
+
+    /// Performance × capacity for capacity-type equipment (pumps,
+    /// condenser, transformers): an undersized component delivers less.
+    pub fn capacity(&self, slot: Slot) -> f64 {
+        self.perf(slot) * self.size_ratio(slot).min(1.0)
+    }
+
+    /// Fraction of rated output the unit can reach, and the component that
+    /// limits it (None when every component is big enough).
+    pub fn output_limit(&self) -> (f64, Option<Slot>) {
+        let mut best = (1.0, None);
+        for &s in OUTPUT_LIMITING {
+            let r = self.size_ratio(s);
+            if r < best.0 {
+                best = (r, Some(s));
+            }
+        }
+        best
+    }
+
+    /// Key of the I&C rescaling package for a core size.
+    pub fn ic_kit_key(size: UnitSize) -> String {
+        format!("ic_scale:{size:?}")
+    }
+
+    /// Plant computers / automation scaled for the installed core?
+    pub fn ic_matches(&self) -> bool {
+        let u = self.unit_size();
+        self.ic_size == u || self.kits.contains(&Self::ic_kit_key(u))
     }
 
     /// Every conversion kit this configuration needs.
@@ -421,6 +584,35 @@ impl Equipment {
                     });
                 }
             }
+        }
+        for (a, b) in COUPLINGS {
+            if let (Some(ca), Some(cb)) = (self.components.get(a), self.components.get(b)) {
+                if slot_is_sized(*a) && slot_is_sized(*b) && ca.size != cb.size {
+                    out.push(ConversionKit {
+                        key: format!("size:{a:?}:{b:?}:{:?}:{:?}", ca.size, cb.size),
+                        name: format!(
+                            "{} ↔ {} size adapter ({} / {}): piping and connection rework",
+                            slot_info(*a).name,
+                            slot_info(*b).name,
+                            ca.size.label(),
+                            cb.size.label()
+                        ),
+                        price: 0.08 * ca.price(*a).max(cb.price(*b)),
+                    });
+                }
+            }
+        }
+        let unit = self.unit_size();
+        if self.ic_size != unit {
+            let ctl: f64 = self.controllers.iter().map(|(m, c)| c.price(*m)).sum();
+            out.push(ConversionKit {
+                key: Self::ic_kit_key(unit),
+                name: format!(
+                    "I&C rescaling for the {} core: plant computers, automation setpoints, NIS and rod position calibration",
+                    unit.label()
+                ),
+                price: 4.0e6 + 0.12 * ctl,
+            });
         }
         for (m, c) in &self.controllers {
             let Some(slot) = module_component(*m) else {
@@ -468,11 +660,7 @@ pub enum Unlock {
 impl Unlock {
     pub fn year(self) -> i32 {
         match self {
-            Unlock::Component { slot, era } => Component {
-                era,
-                tier: Tier::Quality,
-            }
-            .year(slot),
+            Unlock::Component { slot, era } => Component::new(era, Tier::Quality).year(slot),
             Unlock::AnalogControllers { era } => Controller::Analog {
                 era,
                 tier: Tier::Quality,
@@ -495,11 +683,7 @@ impl Unlock {
     /// Reference price used to cost research.
     pub fn reference_price(self) -> f64 {
         match self {
-            Unlock::Component { slot, era } => Component {
-                era,
-                tier: Tier::Quality,
-            }
-            .price(slot),
+            Unlock::Component { slot, era } => Component::new(era, Tier::Quality).price(slot),
             Unlock::AnalogControllers { .. } => 6.0e6,
             Unlock::DigitalControllers => 10.0e6,
             Unlock::Upgrade { upgrade } => upgrades::info(upgrade).price as f64,
@@ -559,20 +743,10 @@ mod tests {
     #[test]
     fn two_era_gap_needs_kits() {
         let mut e = Equipment::standard();
-        e.components.insert(
-            Slot::Turbine,
-            Component {
-                era: Era::Modern,
-                tier: Tier::Premium,
-            },
-        );
-        e.components.insert(
-            Slot::Generator,
-            Component {
-                era: Era::Vintage,
-                tier: Tier::Basic,
-            },
-        );
+        e.components
+            .insert(Slot::Turbine, Component::new(Era::Modern, Tier::Premium));
+        e.components
+            .insert(Slot::Generator, Component::new(Era::Vintage, Tier::Basic));
         let kits = e.required_kits();
         // turbine<->generator coupling, plus digital (modern-era sync/exciter
         // packages are dated, so only the coupling here)
@@ -582,13 +756,8 @@ mod tests {
         );
         // A modern digital feedwater package on vintage feed pumps.
         let mut e = Equipment::standard();
-        e.components.insert(
-            Slot::FeedPumps,
-            Component {
-                era: Era::Vintage,
-                tier: Tier::Quality,
-            },
-        );
+        e.components
+            .insert(Slot::FeedPumps, Component::new(Era::Vintage, Tier::Quality));
         assert!(e
             .required_kits()
             .iter()
@@ -609,14 +778,8 @@ mod tests {
 
     #[test]
     fn perf_and_price_ordering() {
-        let vb = Component {
-            era: Era::Vintage,
-            tier: Tier::Basic,
-        };
-        let mp = Component {
-            era: Era::Modern,
-            tier: Tier::Premium,
-        };
+        let vb = Component::new(Era::Vintage, Tier::Basic);
+        let mp = Component::new(Era::Modern, Tier::Premium);
         assert!(vb.perf() < 1.0 && mp.perf() > 1.0);
         assert!(vb.price(Slot::Turbine) < mp.price(Slot::Turbine));
         assert!(
