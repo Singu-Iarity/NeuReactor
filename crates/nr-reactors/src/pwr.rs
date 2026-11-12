@@ -1787,13 +1787,19 @@ impl Pwr {
         }
 
         let rpc = auto(self, ModuleId::ReactorPower) && self.module_usable(ModuleId::ReactorPower);
-        let rpc_mode = if matches!(
+        // An analog cabinet only has ROD mode: keep the stored mode honest
+        // (covers controller swaps, career purchases and loaded saves).
+        if self.rpc_analog()
+            && self
+                .automation
+                .setpoint(ModuleId::ReactorPower, "mode")
+                .unwrap_or(0.0)
+                != 0.0
+        {
             self.automation
-                .equipment
-                .controllers
-                .get(&ModuleId::ReactorPower),
-            Some(Controller::Analog { .. })
-        ) {
+                .setpoint_set(ModuleId::ReactorPower, "mode", 0.0);
+        }
+        let rpc_mode = if self.rpc_analog() {
             0
         } else {
             self.automation
@@ -2038,6 +2044,17 @@ impl Pwr {
             self.turbine_trip_reason = Some(reason.to_string());
         }
         self.trip_turbine();
+    }
+
+    /// Reactor power controller implemented as an analog cabinet?
+    fn rpc_analog(&self) -> bool {
+        matches!(
+            self.automation
+                .equipment
+                .controllers
+                .get(&ModuleId::ReactorPower),
+            Some(Controller::Analog { .. })
+        )
     }
 
     /// Rod drive mechanisms / power cabinets too small for the core.
@@ -2477,6 +2494,13 @@ impl Pwr {
             Command::SetSetpoint { module, key, value } => {
                 if self.automation.setpoint(*module, key).is_none() {
                     return deny("unknown setpoint for this module");
+                }
+                if *module == ModuleId::ReactorPower
+                    && key == "mode"
+                    && *value != 0.0
+                    && self.rpc_analog()
+                {
+                    return deny("an analog reactor power controller only has ROD mode: BORON and COORD need the digital controller");
                 }
                 self.automation.setpoint_set(*module, key, *value);
             }

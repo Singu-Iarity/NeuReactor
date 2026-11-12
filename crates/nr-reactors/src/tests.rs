@@ -655,3 +655,42 @@ fn plant_survives_a_save_round_trip() {
     assert!((a.pressure - b.pressure).abs() < 0.05e6);
     assert_eq!(a.reactor_tripped, b.reactor_tripped);
 }
+
+#[test]
+fn analog_reactor_power_controller_is_rod_only() {
+    use nr_api::{Controller, Era, Tier};
+    let mut p = Pwr::full_power();
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::ReactorPower,
+            key: "mode".into(),
+            value: 2.0,
+        },
+    );
+    op(
+        &mut p,
+        Command::SetModuleController {
+            module: ModuleId::ReactorPower,
+            controller: Controller::Analog {
+                era: Era::Vintage,
+                tier: Tier::Premium,
+            },
+        },
+    );
+    p.advance(1.0);
+    assert_eq!(
+        p.automation.setpoint(ModuleId::ReactorPower, "mode"),
+        Some(0.0)
+    );
+    assert!(p
+        .command(
+            &Command::SetSetpoint {
+                module: ModuleId::ReactorPower,
+                key: "mode".into(),
+                value: 2.0,
+            },
+            &Origin::Operator,
+        )
+        .is_err());
+}

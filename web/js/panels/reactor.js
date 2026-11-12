@@ -167,7 +167,9 @@ export function build(root, ctx) {
       : "Averages only. Buy the Core Exit Thermocouple Map (Equipment tab) to read every assembly on the core map. Bank areas: average of the assemblies containing that bank's rods; they run cooler while the bank is inserted.";
     rpcMa.update(t);
     const rpc = t.modules.find(m => m.id === "reactor_power");
-    rpcMode.update(rpc?.setpoints.mode);
+    const rpcAnalog = t.equipment?.controllers?.reactor_power?.kind === "analog";
+    rpcMode.update(rpcAnalog ? 0 : rpc?.setpoints.mode, rpcAnalog);
+    rpcMode.el.title = rpcAnalog ? "Analog controller: ROD mode only. BORON and COORD need the digital reactor power controller." : "";
     rpcRamp.update(rpc?.setpoints.ramp_pct_min);
     pref.update(t.readings.power_ref_pct);
     speed.update(t.rod_speed_spm, !manual0());
