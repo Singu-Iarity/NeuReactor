@@ -67,16 +67,44 @@ export const settings = {
 
 // ------------------------------------------------------------- helpers
 
-let noiseBuf = null;
-function noise() {
-  if (!noiseBuf) {
-    noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
-    const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+// Noise beds. Long buffers (so the loop is not heard), white and brown
+// (smoother, for low rumble / ventilation). Each source starts at a random
+// point and plays at a slightly different rate so layers never repeat in
+// step.
+const noiseBufs = {};
+const NOISE_SECONDS = 12;
+function noiseBuffer(kind) {
+  if (!noiseBufs[kind]) {
+    const b = ctx.createBuffer(1, ctx.sampleRate * NOISE_SECONDS, ctx.sampleRate);
+    const d = b.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < d.length; i++) {
+      const w = Math.random() * 2 - 1;
+      if (kind === "brown") {
+        last = (last + 0.02 * w) / 1.02;
+        d[i] = last * 3.5;
+      } else {
+        d[i] = w;
+      }
+    }
+    // Cross-fade the ends so the loop point has no click.
+    const fade = Math.floor(ctx.sampleRate * 0.25);
+    for (let i = 0; i < fade; i++) {
+      const a = i / fade;
+      d[i] = d[i] * a + d[d.length - fade + i] * (1 - a);
+    }
+    noiseBufs[kind] = b;
   }
+  return noiseBufs[kind];
+}
+function noise(kind = "white") {
   const n = ctx.createBufferSource();
-  n.buffer = noiseBuf;
+  n.buffer = noiseBuffer(kind);
   n.loop = true;
+  n.loopEnd = NOISE_SECONDS - 0.25;
+  n.playbackRate.value = 0.96 + 0.08 * Math.random();
+  const start = n.start.bind(n);
+  n.start = (t = 0) => start(t, Math.random() * (NOISE_SECONDS - 1));
   return n;
 }
 
@@ -269,10 +297,10 @@ function buildAmbience() {
   const t = ctx.currentTime;
   const mk = (bus = ambBus) => { const g = ctx.createGain(); g.gain.value = 0; g.connect(bus); return g; };
   // Control room HVAC: low filtered noise.
-  const hvac = mk(), hn = noise(), hf = ctx.createBiquadFilter();
-  hf.type = "lowpass"; hf.frequency.value = 380;
+  const hvac = mk(), hn = noise("brown"), hf = ctx.createBiquadFilter();
+  hf.type = "lowpass"; hf.frequency.value = 300;
   hn.connect(hf).connect(hvac); hn.start(t);
-  hvac.gain.value = 0.05;
+  hvac.gain.value = 0.025;
   // RCP motors: 60 Hz hum + harmonics, felt through the floor.
   const rcp = mk();
   const rcpOsc = [60, 120, 180].map((f, i) => { const o = ctx.createOscillator(); o.frequency.value = f; const g = ctx.createGain(); g.gain.value = [1, 0.5, 0.2][i]; o.connect(g).connect(rcp); o.start(t); return o; });
@@ -281,7 +309,7 @@ function buildAmbience() {
   turbOsc.type = "sawtooth"; turbOsc2.type = "triangle";
   tf.type = "lowpass"; tf.frequency.value = 900;
   turbOsc.connect(tf); turbOsc2.connect(tf); tf.connect(turb);
-  const rumble = mk(), rn = noise(), rf = ctx.createBiquadFilter();
+  const rumble = mk(), rn = noise("brown"), rf = ctx.createBiquadFilter();
   rf.type = "lowpass"; rf.frequency.value = 160;
   rn.connect(rf).connect(rumble); rn.start(t);
   turbOsc.start(t); turbOsc2.start(t);

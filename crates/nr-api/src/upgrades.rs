@@ -38,6 +38,7 @@ pub enum UpgradeId {
     MessageTerminal,
     MessagingHmi,
     CoreExitThermocoupleMap,
+    /// Superseded by the Vital AC Supply component (kept so old saves load).
     VitalUps,
 }
 
@@ -181,7 +182,6 @@ pub const CATALOG: &[UpgradeInfo] = &[
     MESSAGE_TERMINAL,
     MESSAGING_HMI,
     CORE_EXIT_TC_MAP,
-    VITAL_UPS,
 ];
 
 /// Board hardware entries appended to the catalog.
@@ -265,6 +265,11 @@ pub const VITAL_UPS: UpgradeInfo = UpgradeInfo {
     price: 650_000,
     sections: &[],
 };
+
+/// Is this upgrade still sold? (Superseded ids may appear in old saves.)
+pub fn in_catalog(id: UpgradeId) -> bool {
+    CATALOG.iter().any(|u| u.id == id)
+}
 
 pub fn info(id: UpgradeId) -> &'static UpgradeInfo {
     CATALOG

@@ -514,9 +514,18 @@ fn pumps_on_a_dead_bus_cannot_start() {
 
 #[test]
 fn annunciators_black_out_until_diesels_pick_up_unless_ups() {
-    use nr_api::UpgradeId;
+    use nr_api::{Era, Slot, Tier};
     let mut p = Pwr::hot_standby();
-    p.automation.upgrades.remove(&UpgradeId::VitalUps);
+    // Vintage basic vital AC: the vital bus waits for a diesel.
+    op(
+        &mut p,
+        Command::SetComponent {
+            slot: Slot::VitalAc,
+            era: Era::Vintage,
+            tier: Tier::Basic,
+            size: None,
+        },
+    );
     op(
         &mut p,
         Command::SetModuleMode {
@@ -537,7 +546,7 @@ fn annunciators_black_out_until_diesels_pick_up_unless_ups() {
     );
 
     let mut q = Pwr::hot_standby();
-    assert!(q.automation.upgrades.contains(&UpgradeId::VitalUps));
+    // Standard (dated quality) static inverter: a 0.3 s blink, then lit.
     op(&mut q, Command::SetOffsitePower { available: false });
     q.advance(2.0);
     assert!(q.indication_power(), "UPS inverters keep the panels lit");

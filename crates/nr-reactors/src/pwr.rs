@@ -368,6 +368,9 @@ pub struct Pwr {
     pub grid_permission: bool,
     vac_required_until: f64,
     rod_block_until: f64,
+    /// When the safety AC buses were lost (vital AC transfer timing).
+    #[serde(default)]
+    vital_ac_lost_at: Option<f64>,
     /// Overpower turbine runback in progress.
     #[serde(default)]
     pub runback: bool,
@@ -511,6 +514,7 @@ impl Pwr {
             vac_required_until: -1.0,
             rod_block_until: -1.0,
             runback: false,
+            vital_ac_lost_at: None,
             tg: TurbineGenerator::synced(p.generator_rating),
             sync_block_until: -1.0,
             prev_breaker: true,
@@ -942,12 +946,33 @@ impl Pwr {
         }
     }
 
-    /// Annunciators and indicating lamps: vital instrument bus, fed from
-    /// the safety buses, or from the battery through UPS inverters.
+    /// Battery-backed vital AC transfer gap [s] (None: no battery-backed
+    /// supply).
+    fn vital_ac_gap(&self) -> Option<f64> {
+        self.automation
+            .equipment
+            .components
+            .get(&Slot::VitalAc)
+            .map(nr_api::equipment::vital_ac_gap)
+            .unwrap_or(Some(0.3))
+    }
+
+    /// Annunciators and indicating lamps: the vital instrument bus, fed
+    /// from the safety buses, or from the battery through the vital AC
+    /// supply once it has picked up (MG set / inverter transfer time).
     pub fn indication_power(&self) -> bool {
         let b = &self.elec.buses;
-        let ups = self.automation.upgrades.contains(&UpgradeId::VitalUps);
-        b.dc && (ups || b.safety1 || b.safety2)
+        if !b.dc {
+            return false;
+        }
+        if b.safety1 || b.safety2 {
+            return true;
+        }
+        match (self.vital_ac_gap(), self.vital_ac_lost_at) {
+            (Some(gap), Some(lost)) => self.time - lost >= gap,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
     }
 
     /// Is 6.9 kV bus A (false) or B (true) energised?
@@ -1027,6 +1052,12 @@ impl Pwr {
                     self.elec.set_breaker(br, true);
                 }
             }
+        }
+        let safety_live = self.elec.buses.safety1 || self.elec.buses.safety2;
+        if safety_live {
+            self.vital_ac_lost_at = None;
+        } else if self.vital_ac_lost_at.is_none() {
+            self.vital_ac_lost_at = Some(self.time);
         }
         if self.tg.breaker {
             self.breaker_opened_by_operator = false;
@@ -1583,6 +1614,10 @@ impl Pwr {
     /// Rebuild state that is not saved (instruments, readings) after
     /// loading a saved plant.
     pub fn restored(mut self) -> Self {
+        // Drop upgrades that are no longer sold (superseded in old saves).
+        self.automation
+            .upgrades
+            .retain(|u| nr_api::upgrades::in_catalog(*u));
         self.init_sensors();
         self.apply_size();
         self
@@ -3348,11 +3383,7 @@ impl Pwr {
         if mode(ModuleId::BusTransfer) == ModuleMode::Auto {
             add(el, "abt_auto", "AUTO BUS TRANSFER IN SERVICE", I);
         }
-        if !e.buses.safety1
-            && !e.buses.safety2
-            && e.buses.dc
-            && self.automation.upgrades.contains(&UpgradeId::VitalUps)
-        {
+        if !e.buses.safety1 && !e.buses.safety2 && e.buses.dc && self.vital_ac_gap().is_some() {
             add(el, "ups_battery", "VITAL BUS ON UPS / BATTERY", W);
         }
         if e.battery_pct < 25.0 {

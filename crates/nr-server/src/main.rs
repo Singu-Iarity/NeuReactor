@@ -144,13 +144,19 @@ fn auto_warp(w: &mut World) {
             w.warp_reason.clear();
         }
         None => {
-            if w.warping {
+            // Something needs the operator: drop to real time (1x), not
+            // to whatever speed was set before warping. A new grid
+            // request always does, even while already holding fast.
+            let new_request = w.station.pending.as_ref().map(|r| r.id);
+            let fresh_request = new_request.is_some() && new_request != w.warp_seen_request;
+            if w.warping || fresh_request {
                 w.warping = false;
-                w.time_scale = w.warp_return;
+                w.time_scale = 1.0;
                 w.log(nr_reactors::PlantEvent::warn(&format!(
-                    "Auto time warp ended: {reason}"
+                    "Auto time warp: slowed to 1x: {reason}"
                 )));
             }
+            w.warp_seen_request = new_request.or(w.warp_seen_request);
             w.warp_reason = reason;
         }
     }

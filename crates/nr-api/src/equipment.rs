@@ -139,6 +139,9 @@ pub enum Slot {
     EmergencyDiesels,
     /// 125 V DC station batteries and chargers.
     StationBatteries,
+    /// Vital AC supply for annunciators and instruments (MG sets, static
+    /// inverters, UPS).
+    VitalAc,
 }
 
 pub struct SlotInfo {
@@ -152,6 +155,13 @@ pub struct SlotInfo {
 }
 
 pub const SLOTS: &[SlotInfo] = &[
+    SlotInfo {
+        slot: Slot::VitalAc,
+        name: "Vital AC Supply (MG Sets / Inverters / UPS)",
+        base_price: 4e6,
+        year_offset: 0,
+        effect: "Keeps annunciators, lamps and vital instruments lit through a loss of AC",
+    },
     SlotInfo {
         slot: Slot::StationBatteries,
         name: "Station Batteries & Chargers (125 V DC)",
@@ -280,7 +290,26 @@ pub fn slot_info(s: Slot) -> &'static SlotInfo {
 /// Is this slot's equipment sized to the unit (everything but the board
 /// instruments)?
 pub fn slot_is_sized(s: Slot) -> bool {
-    !matches!(s, Slot::BoardInstruments | Slot::StationBatteries)
+    !matches!(
+        s,
+        Slot::BoardInstruments | Slot::StationBatteries | Slot::VitalAc
+    )
+}
+
+/// Vital AC supply: how long the annunciator / instrument bus is dead
+/// after the safety AC buses are lost before the battery-backed supply
+/// carries it [s]. `None`: no battery-backed supply (vintage basic: the
+/// vital bus is on the safety buses and waits for a diesel).
+pub fn vital_ac_gap(c: &Component) -> Option<f64> {
+    match (c.era, c.tier) {
+        (Era::Vintage, Tier::Basic) => None,
+        (Era::Vintage, Tier::Quality) => Some(5.0), // motor-generator set
+        (Era::Vintage, Tier::Premium) => Some(2.0), // MG set with flywheel
+        (Era::Dated, Tier::Basic) => Some(1.0),     // static inverter
+        (Era::Dated, Tier::Quality) => Some(0.3),   // + static transfer switch
+        (Era::Dated, Tier::Premium) => Some(0.0),
+        (Era::Modern, _) => Some(0.0), // online double-conversion UPS
+    }
 }
 
 /// Battery capacity [hours] of a station battery component.
@@ -724,10 +753,15 @@ impl Unlock {
                 Some(Unlock::AnalogControllers { era: Era::Vintage })
             }
             Unlock::DigitalControllers => Some(Unlock::AnalogControllers { era: Era::Dated }),
-            Unlock::Upgrade { upgrade } => match upgrades::info(upgrade).computer {
-                Some(c) => Some(Unlock::Upgrade { upgrade: c }),
-                None => Some(Unlock::DigitalControllers),
-            },
+            Unlock::Upgrade { upgrade } => {
+                let info = upgrades::info(upgrade);
+                match (info.computer, info.kind) {
+                    (Some(c), _) => Some(Unlock::Upgrade { upgrade: c }),
+                    // Stand-alone board hardware needs no software.
+                    (None, upgrades::UpgradeKind::BoardHardware) => None,
+                    (None, _) => Some(Unlock::DigitalControllers),
+                }
+            }
         }
     }
 

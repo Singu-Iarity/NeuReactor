@@ -48,6 +48,8 @@ pub struct World {
     pub ramp_factor: f64,
     /// "hold", "ramp" or "warp".
     pub warp_stage: String,
+    /// Grid request already brought to the operator's attention.
+    pub warp_seen_request: Option<u32>,
     pub operator_token: String,
     pub plugins: BTreeMap<String, PluginRecord>,
     pub events: Vec<LoggedEvent>,
@@ -85,6 +87,7 @@ impl World {
             warp_reason: String::new(),
             ramp_factor: 20.0,
             warp_stage: String::new(),
+            warp_seen_request: None,
             operator_token: random_token(),
             plugins: BTreeMap::new(),
             events: Vec::new(),

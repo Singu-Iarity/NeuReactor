@@ -221,8 +221,9 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
   Restoration module (restore buses on offsite return, safety buses back
   from the diesels, house load to the UAT at load); diesel load sequencer
   sheds and loads the safety buses; tiered station batteries (about
-  1.2 to 5.6 h); annunciators on a vital bus that blacks out until a
-  diesel picks up, or rides through on Vital AC UPS inverters
+  1.2 to 5.6 h); annunciators on a vital AC bus whose supply is a plant
+  component: vintage basic waits for a diesel, vintage MG sets black out
+  for a few seconds, dated static inverters blink, modern UPS is seamless
 - MCR lighting dims and flickers with loss of normal / emergency / DC
   lighting
 - Station electrical: startup transformer (grid) and unit auxiliary

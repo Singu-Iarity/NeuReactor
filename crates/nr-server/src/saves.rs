@@ -109,7 +109,10 @@ pub fn load(w: &mut World, name: &str) -> Result<(), String> {
         ));
     }
     w.plant = game.plant.restored();
-    w.career = game.career;
+    w.career = game.career.map(|mut c| {
+        c.upgrades.retain(|u| nr_api::upgrades::in_catalog(*u));
+        c
+    });
     w.station = game.station;
     w.time_scale = game.time_scale;
     w.auto_warp = game.auto_warp;
