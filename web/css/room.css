@@ -618,3 +618,7 @@ body.bf .mp-win.flash { background: #3a3424; color: #6f6650; box-shadow: none; }
 .rec-speeds > span { margin-right: 4px; }
 .rec-speed { font: 700 8px sans-serif; padding: 2px 5px; border: 1px solid #333; border-radius: 2px; background: #ddd8c8; cursor: pointer; }
 .rec-speed.on { background: #f2b33a; box-shadow: 0 0 6px #f2b33a; }
+.req-status { font: 700 11px var(--mono); padding: 4px 6px; border-radius: 3px; margin-top: 4px; }
+.req-status.ok { background: #1f5a2c; color: #d8ffe0; }
+.req-status.warn { background: #6a4d10; color: #ffe9b0; }
+.req-status.bad { background: #6a1410; color: #ffd6d0; }

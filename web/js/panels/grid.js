@@ -68,9 +68,22 @@ export function build(root, ctx) {
     rec.draw();
     if (!st) return;
     const p = st.pending;
-    request.replaceChildren(p
-      ? h("div", { class: "req-card" }, h("b", {}, `${p.target_mwe.toFixed(0)} MWe net`), h("div", { class: "card-sub" }, `by ${fmt(p.deadline)} (issued ${fmt(p.issued_at)})`))
-      : h("div", { class: "card-sub" }, t.generator_breaker ? "No pending instruction." : "Unit off-line: call Grid Dispatch for permission to synchronise (Comms tab)."));
+    const left = dl => { const m = Math.round((dl - t.sim_time) / 60); return m >= 0 ? `${m} min left` : `${-m} min overdue`; };
+    let status = null;
+    if (st.demand_mwe > 0 && t.generator_breaker) {
+      const off = R.net_mwe - st.demand_mwe;
+      const [txt, cls] = st.reached && Math.abs(off) <= 33 ? ["ON TARGET — hold output", "ok"]
+        : st.reached ? [`DRIFTED ${off > 0 ? "+" : ""}${off.toFixed(0)} MWe — correct output`, "warn"]
+        : st.deadline_missed ? [`DEADLINE MISSED — ${off > 0 ? "+" : ""}${off.toFixed(0)} MWe off`, "bad"]
+        : [`RAMPING — ${off > 0 ? "+" : ""}${off.toFixed(0)} MWe to go, ${left(st.deadline)}`, "warn"];
+      status = h("div", { class: `req-status ${cls}` }, `Committed ${st.demand_mwe.toFixed(0)} MWe net: ${txt}`);
+    }
+    request.replaceChildren(...[
+      p ? h("div", { class: "req-card" }, h("b", {}, `NEW: ${p.target_mwe.toFixed(0)} MWe net`),
+        h("div", { class: "card-sub" }, `by ${fmt(p.deadline)} (${left(p.deadline)}) — press ACCEPT REQUEST to acknowledge`)) : null,
+      status,
+      !p && !status ? h("div", { class: "card-sub" }, t.generator_breaker ? "No instruction yet." : "Unit off-line: call Grid Dispatch for permission to synchronise (Comms tab).") : null,
+    ].filter(Boolean));
     accept.update(!!p, !p || st.agc);
     const agcOk = t.modules.find(m => m.id === "plant_master")?.mode === "auto"
       && t.upgrades.find(u => u.id === "grid_dispatch_link")?.installed;

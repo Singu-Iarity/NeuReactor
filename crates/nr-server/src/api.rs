@@ -286,6 +286,8 @@ fn api_authed(
                 "boron_sample": st.boron_sample,
                 "messages": st.messages.iter().rev().take(80).collect::<Vec<_>>(),
                 "unacked": st.unacked(),
+                "reached": st.reached,
+                "deadline_missed": st.deadline_missed,
                 "sim_time": w.plant.time,
             });
             drop(w);

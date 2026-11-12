@@ -180,6 +180,20 @@ pub struct Station {
     seed: u64,
     was_online: bool,
     was_tripped: bool,
+    /// Reminder sent for the pending (unacknowledged) instruction.
+    #[serde(default)]
+    reminded: bool,
+    /// Net output has reached the committed demand since it was set.
+    #[serde(default)]
+    pub reached: bool,
+    #[serde(default)]
+    drift_s: f64,
+    #[serde(default)]
+    drift_warned: bool,
+    /// Fines incurred (amount, reason); drained by the host each tick and
+    /// charged in career mode.
+    #[serde(skip)]
+    pub fines: Vec<(f64, String)>,
 }
 
 impl Default for Station {
@@ -207,6 +221,11 @@ impl Station {
             seed: 0x9E37_79B9_7F4A_7C15,
             was_online: false,
             was_tripped: false,
+            reminded: false,
+            reached: false,
+            drift_s: 0.0,
+            drift_warned: false,
+            fines: Vec::new(),
         }
     }
 
@@ -248,6 +267,7 @@ impl Station {
             deadline: t + minutes * 60.0 + 1800.0,
         };
         self.next_id += 1;
+        self.reminded = false;
         self.say(
             t,
             "Grid Dispatch",
@@ -260,12 +280,19 @@ impl Station {
         self.pending = Some(req);
     }
 
-    /// Operator (or AGC) accepts the pending load request.
-    pub fn accept(&mut self, t: f64) -> Option<f64> {
-        let req = self.pending.take()?;
+    fn commit(&mut self, req: &LoadRequest) {
         self.demand_mwe = req.target_mwe;
         self.deadline = Some(req.deadline);
         self.deadline_missed = false;
+        self.reached = false;
+        self.drift_s = 0.0;
+        self.drift_warned = false;
+    }
+
+    /// Operator (or AGC) accepts the pending load request.
+    pub fn accept(&mut self, t: f64) -> Option<f64> {
+        let req = self.pending.take()?;
+        self.commit(&req);
         self.say(
             t,
             "Control Room",
@@ -471,6 +498,7 @@ impl Station {
             self.demand_mwe = 0.0;
             self.pending = None;
             self.deadline = None;
+            self.reached = false;
             self.next_request_at = f64::INFINITY;
         }
         if plant.reactor_tripped && !self.was_tripped {
@@ -481,7 +509,9 @@ impl Station {
 
         if online && self.pending.is_none() && t >= self.next_request_at {
             let target = if self.demand_mwe <= 0.0 {
-                300.0
+                // First instruction: pick up load, or hold what the unit
+                // already produces.
+                (plant.gross_mwe - plant.house_load()).max(300.0)
             } else {
                 let mut tgt;
                 loop {
@@ -503,28 +533,106 @@ impl Station {
         if self.agc && self.pending.is_some() {
             self.accept(t);
         }
+        // Unacknowledged instruction: remind, then it becomes binding anyway.
+        if let Some(req) = self.pending.clone() {
+            if !self.reminded && t > req.issued_at + 300.0 {
+                self.reminded = true;
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!(
+                        "MCR, Grid Dispatch: please acknowledge the instruction for {:.0} MWe.",
+                        req.target_mwe
+                    ),
+                    true,
+                );
+            }
+            if t > req.deadline {
+                self.pending = None;
+                self.commit(&req);
+                self.deadline_missed = true;
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!(
+                        "Instruction for {:.0} MWe was never acknowledged and the deadline has passed. Logged as non-compliance; we still need {:.0} MWe.",
+                        req.target_mwe, req.target_mwe
+                    ),
+                    true,
+                );
+                self.fines.push((
+                    150_000.0,
+                    format!(
+                        "dispatch instruction ({:.0} MWe) not acknowledged",
+                        req.target_mwe
+                    ),
+                ));
+            }
+        }
 
         // Performance against demand.
         if online && self.demand_mwe > 0.0 {
             let net = plant.gross_mwe - plant.house_load();
             let past_deadline = self.deadline.map(|d| t > d).unwrap_or(true);
+            let on_target = (net - self.demand_mwe).abs() <= 0.03 * RATED_NET;
+            if on_target {
+                if !self.reached {
+                    self.reached = true;
+                    let text = if past_deadline {
+                        format!(
+                            "Unit now at {:.0} MWe, noted late. Hold this output, thank you.",
+                            self.demand_mwe
+                        )
+                    } else {
+                        format!(
+                            "Thank you MCR, unit at {:.0} MWe on schedule. Hold this output.",
+                            self.demand_mwe
+                        )
+                    };
+                    self.say(t, "Grid Dispatch", text, true);
+                }
+                self.drift_s = 0.0;
+                self.drift_warned = false;
+            }
             if past_deadline {
-                if (net - self.demand_mwe).abs() <= 0.03 * RATED_NET {
+                if on_target {
                     self.on_target_s += dt;
                 } else {
                     self.off_target_s += dt;
-                    if !self.deadline_missed && self.deadline.is_some() {
+                    if !self.reached && !self.deadline_missed {
                         self.deadline_missed = true;
+                        let short = (self.demand_mwe - net).abs();
                         self.say(
                             t,
                             "Grid Dispatch",
                             format!(
-                                "Deadline missed: we need {:.0} MWe from you.",
-                                self.demand_mwe
+                                "Deadline missed: we need {:.0} MWe from you, you are at {:.0} MWe.",
+                                self.demand_mwe,
+                                net.max(0.0)
                             ),
                             true,
                         );
+                        self.fines.push((
+                            50_000.0 + 500.0 * short,
+                            format!("missed dispatch deadline ({:.0} MWe off target)", short),
+                        ));
                     }
+                }
+            }
+            if self.reached && !on_target {
+                self.drift_s += dt;
+                if self.drift_s > 600.0 && !self.drift_warned {
+                    self.drift_warned = true;
+                    self.say(
+                        t,
+                        "Grid Dispatch",
+                        format!(
+                            "MCR, you have drifted off your dispatch target of {:.0} MWe ({:.0} MWe now). Please correct.",
+                            self.demand_mwe,
+                            net.max(0.0)
+                        ),
+                        true,
+                    );
                 }
             }
         }
@@ -694,5 +802,48 @@ mod parse_tests {
         assert!(s.typed("blah blah", 0.0).is_none());
         assert_eq!(s.replies.len(), 1);
         assert_eq!(s.replies[0].call, Call::SayAgain);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn ignored_request_becomes_binding_and_is_fined() {
+        let mut plant = Pwr::full_power();
+        let mut st = Station::new();
+        st.tick(&mut plant, 0.1); // sees the unit on-line
+        st.next_request_at = plant.time;
+        st.tick(&mut plant, 0.1);
+        let req = st.pending.clone().expect("request issued");
+        plant.time = req.issued_at + 301.0;
+        st.tick(&mut plant, 0.1);
+        assert!(st
+            .messages
+            .iter()
+            .any(|m| m.text.contains("please acknowledge")));
+        plant.time = req.deadline + 1.0;
+        st.tick(&mut plant, 0.1);
+        assert!(st.pending.is_none());
+        assert_eq!(st.demand_mwe, req.target_mwe);
+        assert!(!st.fines.is_empty());
+    }
+
+    #[test]
+    fn reaching_target_gets_thanks() {
+        let mut plant = Pwr::full_power();
+        let mut st = Station::new();
+        st.tick(&mut plant, 0.1);
+        let net = plant.gross_mwe - plant.house_load();
+        st.issue(plant.time, net, "Test.");
+        st.accept(plant.time);
+        st.tick(&mut plant, 0.1);
+        assert!(st.reached);
+        assert!(st
+            .messages
+            .iter()
+            .any(|m| m.text.contains("Hold this output")));
+        assert!(st.fines.is_empty());
     }
 }

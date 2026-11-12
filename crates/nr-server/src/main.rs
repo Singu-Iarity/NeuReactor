@@ -108,6 +108,14 @@ fn sim_loop(world: Arc<Mutex<World>>) {
                 }
                 plant.events.push(e);
             }
+            for (amount, why) in std::mem::take(&mut station.fines) {
+                plant.events.push(nr_reactors::PlantEvent::warn(&format!(
+                    "Grid penalty: {why}"
+                )));
+                if let Some(c) = career.as_mut() {
+                    c.fine(amount, &why);
+                }
+            }
         }
         // AGC: the unit load controller follows grid dispatch (needs the
         // plant master in AUTO and the grid dispatch link).
