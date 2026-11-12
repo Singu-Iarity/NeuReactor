@@ -77,6 +77,12 @@ pub enum Intent {
         mw: Option<f64>,
         hours: Option<f64>,
     },
+    /// Ask for a long-term contract: "contract 900 MW for 12 months seasonal".
+    Contract {
+        mw: Option<f64>,
+        months: u32,
+        shaped: bool,
+    },
     /// Counter a grid offer: "how about 900".
     Counter {
         mw: Option<f64>,
@@ -157,6 +163,10 @@ fn mw_and_hours(t: &str) -> (Option<f64>, Option<f64>) {
             hours = Some(v * 24.0);
         } else if unit.starts_with("week") {
             hours = Some(v * 168.0);
+        } else if unit.starts_with("month") {
+            hours = Some(v * 730.0);
+        } else if unit.starts_with("year") || unit.starts_with("yr") {
+            hours = Some(v * 8760.0);
         } else if mw.is_none() {
             mw = Some(v);
         }
@@ -188,6 +198,18 @@ fn number_in(t: &str) -> Option<f64> {
 pub fn parse_request(text: &str) -> Option<Intent> {
     let t = text.to_lowercase();
     let any = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
+    // Long-term contract: "contract 900 MW for a year, seasonal".
+    if any(&["contract", "ppa", "power purchase"]) {
+        let (mw, hours) = mw_and_hours(&t);
+        let hours = hours.or(if t.contains("a year") {
+            Some(8760.0)
+        } else {
+            None
+        });
+        let months = (hours.unwrap_or(8760.0) / 730.0).round().clamp(1.0, 120.0) as u32;
+        let shaped = any(&["season", "shaped", "winter", "summer"]);
+        return Some(Intent::Contract { mw, months, shaped });
+    }
     // Base-load block: "baseload 1000 MW for 3 days", "hold 900 MW for 24 hours".
     if any(&["base load", "baseload", "base-load"])
         || (t.contains("hold") && any(&["hour", "day", "week"]))
@@ -395,6 +417,8 @@ pub enum Call {
     Misrouted,
     /// Ask dispatch for a base-load block (hold a fixed output for hours).
     Baseload,
+    /// Ask for a long-term contract.
+    Contract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,6 +503,17 @@ pub struct Station {
     /// Calendar time [s since 00:00 1 January], set by the host.
     #[serde(default)]
     pub calendar_s: f64,
+    /// Long-term contract in force.
+    #[serde(default)]
+    pub contract: Option<Contract>,
+    /// Contract request awaiting dispatch's answer.
+    #[serde(default)]
+    pub contract_ask: Option<ContractAsk>,
+    /// Contract shortfall (replacement power) not yet billed [$].
+    #[serde(default)]
+    pub shortfall_owed: f64,
+    #[serde(default)]
+    shortfall_billed_at: f64,
 }
 
 /// What a grid counteroffer is for.
@@ -487,6 +522,8 @@ pub struct Station {
 pub enum OfferKind {
     Change,
     Baseload,
+    /// Long-term contract (power purchase agreement).
+    Contract,
 }
 
 /// A counteroffer from grid dispatch, waiting for the control room to
@@ -501,6 +538,62 @@ pub struct Offer {
     pub expires_at: f64,
     /// Dispatch's final position (no more meeting in the middle).
     pub last: bool,
+    /// Contract: term [months], seasonal shape, monthly targets and price.
+    #[serde(default)]
+    pub months: u32,
+    #[serde(default)]
+    pub shaped: bool,
+    #[serde(default)]
+    pub profile: Vec<f64>,
+    #[serde(default)]
+    pub price_mult: f64,
+}
+
+/// Length of a contract month [s] (365 / 12 days).
+pub const MONTH_S: f64 = 365.0 / 12.0 * 86_400.0;
+
+/// A long-term contract (power purchase agreement): a fixed output, flat
+/// or shaped by season, for months to years at a fixed share of the
+/// market price.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Contract {
+    /// Plant time the contract started / ends [s].
+    pub start_t: f64,
+    pub end_t: f64,
+    pub months: u32,
+    pub shaped: bool,
+    /// Committed output for each contract month [MWe net].
+    pub profile: Vec<f64>,
+    /// Share of the market price paid while on target.
+    pub price_mult: f64,
+    /// Contract month currently applied.
+    pub month: usize,
+}
+
+impl Contract {
+    pub fn target(&self) -> f64 {
+        self.profile
+            .get(self.month.min(self.profile.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0.0)
+    }
+}
+
+/// Price share for a contract: longer terms trade price for certainty;
+/// a seasonally shaped block is worth a little more to the buyer.
+pub fn contract_price(months: u32, shaped: bool) -> f64 {
+    let years = months as f64 / 12.0;
+    let base = (0.93 - 0.055 * years.min(2.0) - 0.0075 * (years - 2.0).max(0.0)).max(0.80);
+    base + if shaped { 0.03 } else { 0.0 }
+}
+
+/// Contract request; the output may be left for dispatch to choose.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ContractAsk {
+    pub mw: Option<f64>,
+    pub months: u32,
+    pub shaped: bool,
+    pub counter: bool,
 }
 
 /// Base-load request; either value may be left for dispatch to choose.
@@ -564,6 +657,10 @@ impl Station {
             change_counter: false,
             offer: None,
             calendar_s: 0.0,
+            contract: None,
+            contract_ask: None,
+            shortfall_owed: 0.0,
+            shortfall_billed_at: 0.0,
         }
     }
 
@@ -684,6 +781,20 @@ impl Station {
             l.seconds += dt;
         };
         book(&mut self.totals);
+        // Contract shortfall: the buyer replaces missing output at 1.2x the
+        // market price; billed once a game-day.
+        if let Some(c) = &self.contract {
+            let delivered = if online { net.max(0.0) } else { 0.0 };
+            let short = (c.target() - delivered - 0.03 * rated_net(plant)).max(0.0);
+            self.shortfall_owed += short * price_mwh * 1.2 * h;
+        }
+        if self.shortfall_owed > 0.0 && plant.time - self.shortfall_billed_at >= 86_400.0 {
+            let owed = std::mem::take(&mut self.shortfall_owed);
+            self.shortfall_billed_at = plant.time;
+            self.fine(owed, "contract shortfall (replacement power)".into());
+        } else if self.shortfall_owed == 0.0 {
+            self.shortfall_billed_at = plant.time;
+        }
         if let Some(i) = &mut self.instruction {
             book(&mut i.ledger);
             if on_target {
@@ -750,8 +861,15 @@ impl Station {
                 self.request_baseload(mw, hours, t);
                 return intent;
             }
+            Some(Intent::Contract { mw, months, shaped }) => {
+                self.request_contract(mw, months, shaped, t);
+                return intent;
+            }
             Some(Intent::Counter { mw, hours }) => {
                 match self.offer.clone() {
+                    Some(o) if o.kind == OfferKind::Contract => {
+                        self.request_contract(mw.or(Some(o.mw)), o.months, o.shaped, t)
+                    }
                     Some(o) if o.kind == OfferKind::Baseload => {
                         self.request_baseload(mw.or(Some(o.mw)), hours.or(Some(o.hours)), t)
                     }
@@ -948,6 +1066,10 @@ impl Station {
             hours,
             expires_at: t + 900.0,
             last,
+            months: 0,
+            shaped: false,
+            profile: Vec::new(),
+            price_mult: 0.0,
         });
         self.say(t, "Grid Dispatch", text, true);
     }
@@ -961,6 +1083,7 @@ impl Station {
         match o.kind {
             OfferKind::Change => self.apply_change(o.mw, t),
             OfferKind::Baseload => self.apply_baseload(o.mw, o.hours, t),
+            OfferKind::Contract => self.apply_contract(&o, t),
         }
         true
     }
@@ -1196,6 +1319,250 @@ impl Station {
         }
     }
 
+    /// Ask for a long-term contract of `months`, flat or seasonally shaped;
+    /// leave `mw` empty for dispatch to propose the output.
+    pub fn request_contract(&mut self, mw: Option<f64>, months: u32, shaped: bool, t: f64) {
+        let counter = matches!(&self.offer, Some(o) if o.kind == OfferKind::Contract && o.months == months && o.shaped == shaped);
+        let months = months.clamp(1, 120);
+        self.contract_ask = Some(ContractAsk {
+            mw,
+            months,
+            shaped,
+            counter,
+        });
+        let shape = if shaped { "seasonally shaped" } else { "flat" };
+        let text = match (mw, counter) {
+            (Some(m), true) => format!("How about {m:.0} MWe on the {months}-month contract?"),
+            (Some(m), false) => {
+                format!("Requesting a {months}-month {shape} contract at {m:.0} MWe net.")
+            }
+            (None, _) => {
+                format!("Requesting a {months}-month {shape} contract. What output can you take?")
+            }
+        };
+        self.say(
+            t,
+            "Control Room",
+            format!("To Grid Dispatch: {text}"),
+            false,
+        );
+        let at = t + 120.0 + 180.0 * self.rand();
+        self.replies.push(PendingReply {
+            at,
+            call: Call::Contract,
+            who: None,
+            meant_for: None,
+        });
+    }
+
+    /// Monthly output caps for a contract starting now: what the system can
+    /// absorb through the lowest demand of each month [MWe net].
+    fn monthly_caps(&self, rated: f64, months: u32) -> Vec<f64> {
+        (0..months)
+            .map(|m| {
+                let start = self.calendar_s + m as f64 * MONTH_S;
+                let (lo, _, _) = grid_model::load_window(start, MONTH_S / 3600.0);
+                rated * grid_model::baseload_cap(lo)
+            })
+            .collect()
+    }
+
+    /// Contract profile at reference output `mw`: flat, or shaped like the
+    /// system (the month with the most headroom gets `mw`, others in
+    /// proportion to their caps).
+    fn contract_profile(caps: &[f64], mw: f64, shaped: bool) -> Vec<f64> {
+        if shaped {
+            let top = caps.iter().cloned().fold(0.0, f64::max).max(1.0);
+            caps.iter().map(|c| round25(mw * c / top)).collect()
+        } else {
+            vec![round25(mw); caps.len()]
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn contract_offer(
+        &mut self,
+        mw: f64,
+        months: u32,
+        shaped: bool,
+        last: bool,
+        caps: &[f64],
+        t: f64,
+        lead: String,
+    ) {
+        let profile = Self::contract_profile(caps, mw, shaped);
+        let price = contract_price(months, shaped);
+        let shape_txt = if shaped {
+            let lo = profile.iter().cloned().fold(f64::MAX, f64::min);
+            let hi = profile.iter().cloned().fold(0.0, f64::max);
+            format!("shaped {lo:.0}-{hi:.0} MWe by season")
+        } else {
+            format!("flat {mw:.0} MWe")
+        };
+        self.offer = Some(Offer {
+            kind: OfferKind::Contract,
+            mw,
+            hours: months as f64 * MONTH_S / 3600.0,
+            expires_at: t + 1800.0,
+            last,
+            months,
+            shaped,
+            profile,
+            price_mult: price,
+        });
+        self.say(
+            t,
+            "Grid Dispatch",
+            format!("{lead}{months}-month contract, {shape_txt}, at {:.0} % of the market price. Shortfalls are charged at replacement cost. Deal?", price * 100.0),
+            true,
+        );
+    }
+
+    fn answer_contract(&mut self, plant: &Pwr) {
+        let t = plant.time;
+        let Some(ask) = self.contract_ask.take() else {
+            return;
+        };
+        if !plant.tg.breaker {
+            self.say(
+                t,
+                "Grid Dispatch",
+                "MCR, call back about contracts when the unit is on-line.".into(),
+                true,
+            );
+            return;
+        }
+        let rated = rated_net(plant).max(0.0);
+        let caps = self.monthly_caps(rated, ask.months);
+        // Reference output the system can absorb: flat = the tightest month;
+        // shaped = the month with the most headroom (others scale down).
+        let limit = round25(if ask.shaped {
+            caps.iter().cloned().fold(0.0, f64::max)
+        } else {
+            caps.iter().cloned().fold(f64::MAX, f64::min)
+        });
+        let prev_same = matches!(&self.offer, Some(o) if o.kind == OfferKind::Contract && o.months == ask.months && o.shaped == ask.shaped);
+        if !prev_same {
+            self.offer = None;
+        }
+        match ask.mw {
+            None => self.contract_offer(
+                limit,
+                ask.months,
+                ask.shaped,
+                false,
+                &caps,
+                t,
+                "We can offer a ".into(),
+            ),
+            Some(mw) => {
+                let mw = mw.min(rated);
+                if ask.counter && prev_same {
+                    let o = self.offer.clone().unwrap();
+                    if mw <= limit + 0.04 * rated {
+                        self.contract_offer(
+                            mw,
+                            ask.months,
+                            ask.shaped,
+                            true,
+                            &caps,
+                            t,
+                            "Agreed in principle: ".into(),
+                        );
+                        self.offer.as_mut().unwrap().expires_at = t + 1800.0;
+                    } else if !o.last {
+                        let mid = round25(0.5 * (mw + o.mw));
+                        self.contract_offer(
+                            mid,
+                            ask.months,
+                            ask.shaped,
+                            true,
+                            &caps,
+                            t,
+                            "Let's meet in the middle, MCR. Final offer: ".into(),
+                        );
+                    } else {
+                        self.contract_offer(
+                            o.mw,
+                            ask.months,
+                            ask.shaped,
+                            true,
+                            &caps,
+                            t,
+                            "Sorry MCR, that's the best we can do: ".into(),
+                        );
+                    }
+                } else if mw <= limit + 0.01 * rated {
+                    self.contract_offer(
+                        mw,
+                        ask.months,
+                        ask.shaped,
+                        false,
+                        &caps,
+                        t,
+                        "We can do that: ".into(),
+                    );
+                } else {
+                    let why = self.grid_why();
+                    self.contract_offer(
+                        limit,
+                        ask.months,
+                        ask.shaped,
+                        false,
+                        &caps,
+                        t,
+                        format!("{mw:.0} MWe is more than the system can absorb through the lowest demand of the term ({why}). We'd offer a "),
+                    );
+                }
+            }
+        }
+    }
+
+    fn apply_contract(&mut self, o: &Offer, t: f64) {
+        let c = Contract {
+            start_t: t,
+            end_t: t + o.months as f64 * MONTH_S,
+            months: o.months,
+            shaped: o.shaped,
+            profile: o.profile.clone(),
+            price_mult: o.price_mult,
+            month: 0,
+        };
+        let target = c.target();
+        let d = (target - self.demand_mwe.max(0.0)).abs();
+        let deadline = t + (d / RAMP_MW_PER_MIN + 30.0) * 60.0;
+        self.pending = None;
+        self.set_commitment(target, deadline, t);
+        self.baseload_until = Some(c.end_t);
+        self.next_request_at = f64::INFINITY;
+        self.say(
+            t,
+            "Grid Dispatch",
+            format!(
+                "Contract signed: {} months at {:.0} % of the market price. This month: {target:.0} MWe net. No dispatch instructions until it ends.",
+                c.months,
+                c.price_mult * 100.0
+            ),
+            true,
+        );
+        self.contract = Some(c);
+    }
+
+    /// Terminate the contract early: a fee of 10 % of the remaining
+    /// contract value.
+    pub fn terminate_contract(&mut self, t: f64) -> bool {
+        let Some(c) = self.contract.take() else {
+            return false;
+        };
+        let remaining_h = ((c.end_t - t) / 3600.0).max(0.0);
+        let fee = 0.10 * remaining_h * c.target() * self.last_price * c.price_mult;
+        self.baseload_until = None;
+        self.next_request_at = t + 600.0;
+        self.say(t, "Grid Dispatch", format!("Contract terminated early, MCR. Termination fee ${:.2}M. Back on load-following dispatch.", fee / 1e6), true);
+        self.fine(fee, "early contract termination".into());
+        true
+    }
+
     fn credit(&mut self, amount: f64, why: String) {
         self.totals.revenue += amount;
         if let Some(i) = &mut self.instruction {
@@ -1311,7 +1678,8 @@ impl Station {
             | Call::NoRequest
             | Call::LoadChange
             | Call::Misrouted
-            | Call::Baseload => return,
+            | Call::Baseload
+            | Call::Contract => return,
         };
         self.say(t, "Control Room", format!("To {to}: {text}"), false);
         self.replies.push(PendingReply {
@@ -1386,6 +1754,7 @@ impl Station {
             ),
             Call::LoadChange => self.answer_load_change(plant),
             Call::Baseload => self.answer_baseload(plant),
+            Call::Contract => self.answer_contract(plant),
             Call::Misrouted => {}
             Call::NoRequest => self.say(
                 t,
@@ -1449,7 +1818,19 @@ impl Station {
                     true,
                 );
             }
-            if self.demand_mwe <= 0.0 && self.pending.is_none() {
+            if let Some(c) = self.contract.clone() {
+                // Back on-line under a contract: resume its target.
+                let target = c.target();
+                self.set_commitment(target, t + (target / RAMP_MW_PER_MIN + 30.0) * 60.0, t);
+                self.baseload_until = Some(c.end_t);
+                self.next_request_at = f64::INFINITY;
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!("Welcome back, MCR. Contract target {target:.0} MWe net."),
+                    true,
+                );
+            } else if self.demand_mwe <= 0.0 && self.pending.is_none() {
                 self.next_request_at = t + 30.0;
             }
         }
@@ -1458,7 +1839,11 @@ impl Station {
             self.say(
                 t,
                 "Grid Dispatch",
-                "Unit off-line. Dispatch suspended.".into(),
+                if self.contract.is_some() {
+                    "Unit off-line. Your contract stays in force: the shortfall is bought in at your cost until you are back.".into()
+                } else {
+                    "Unit off-line. Dispatch suspended.".to_string()
+                },
                 true,
             );
             self.demand_mwe = 0.0;
@@ -1483,6 +1868,39 @@ impl Station {
                 "Offer withdrawn, MCR: no answer.".into(),
                 true,
             );
+        }
+        // Long-term contract: move to each month's target; end of term.
+        if let Some(c) = self.contract.clone() {
+            if t >= c.end_t {
+                self.contract = None;
+                self.baseload_until = None;
+                self.next_request_at = t + 60.0;
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    "Contract complete. Thank you MCR; back on load-following dispatch.".into(),
+                    true,
+                );
+            } else {
+                let m = (((t - c.start_t) / MONTH_S).floor() as usize)
+                    .min(c.profile.len().saturating_sub(1));
+                if m != c.month {
+                    let mut c2 = c.clone();
+                    c2.month = m;
+                    let target = c2.target();
+                    self.contract = Some(c2);
+                    if (target - self.demand_mwe).abs() > 0.5 {
+                        let d = (target - self.demand_mwe).abs();
+                        self.set_commitment(target, t + (d / RAMP_MW_PER_MIN + 30.0) * 60.0, t);
+                    }
+                    self.say(
+                        t,
+                        "Grid Dispatch",
+                        format!("Contract month {}: target {target:.0} MWe net.", m + 1),
+                        true,
+                    );
+                }
+            }
         }
         if let Some(until) = self.baseload_until {
             if t >= until {
@@ -1646,6 +2064,12 @@ impl Station {
             return 1.0;
         }
         let net = plant.gross_mwe - plant.house_load();
+        if let Some(c) = &self.contract {
+            // Delivered power is paid at the contract price; any shortfall
+            // is billed separately at replacement cost (see account()).
+            let _ = net;
+            return c.price_mult;
+        }
         if (net - self.demand_mwe).abs() <= 0.03 * rated_net(plant) {
             if self.baseload_until.is_some() {
                 BASELOAD_PRICE
@@ -1936,6 +2360,22 @@ mod dispatch_tests {
             })
         );
         assert_eq!(
+            p("looking for a contract, 900 MW for a year, seasonal"),
+            Some(Intent::Contract {
+                mw: Some(900.0),
+                months: 12,
+                shaped: true
+            })
+        );
+        assert_eq!(
+            p("ppa 800 mw for 2 years"),
+            Some(Intent::Contract {
+                mw: Some(800.0),
+                months: 24,
+                shaped: false
+            })
+        );
+        assert_eq!(
             p("can we hold 900 mw for 12 hours"),
             Some(Intent::Baseload {
                 mw: Some(900.0),
@@ -2071,5 +2511,68 @@ mod dispatch_tests {
         } else {
             assert!(st.baseload_until.is_some(), "or approved outright");
         }
+    }
+
+    #[test]
+    fn contract_prices_fall_with_term_and_shaping_pays_more() {
+        assert!(contract_price(1, false) > contract_price(12, false));
+        assert!(contract_price(12, false) > contract_price(60, false));
+        assert!(contract_price(60, false) >= 0.80 - 1e-9);
+        assert!(contract_price(12, true) > contract_price(12, false));
+    }
+
+    #[test]
+    fn year_long_seasonal_contract_runs_month_by_month() {
+        // Signed on 2 January.
+        let (mut plant, mut st) = on_line_at(DAY_S + 9.0 * HOUR_S);
+        st.request_contract(None, 12, true, plant.time);
+        plant.time += 400.0;
+        st.tick(&mut plant, 400.0);
+        let o = st
+            .offer
+            .clone()
+            .expect("dispatch proposes a shaped contract");
+        assert_eq!(o.kind, OfferKind::Contract);
+        assert_eq!(o.profile.len(), 12);
+        let jan = o.profile[0];
+        let apr = o.profile[3];
+        assert!(jan > apr, "more in winter ({jan}) than spring ({apr})");
+        // Flat for the same year is limited by the tightest month.
+        let flat_cap = o.profile.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(st.accept_offer(plant.time));
+        assert_eq!(st.demand_mwe, jan);
+        // A month and a bit later: the next month's target, no dispatch calls.
+        plant.time += MONTH_S + 3600.0;
+        st.calendar_s += MONTH_S + 3600.0;
+        st.tick(&mut plant, MONTH_S + 3600.0);
+        assert_eq!(st.contract.as_ref().unwrap().month, 1);
+        assert_eq!(st.demand_mwe, o.profile[1]);
+        assert!(st.pending.is_none());
+        assert!(flat_cap <= jan);
+        // Ends after the term.
+        plant.time += 11.0 * MONTH_S;
+        st.tick(&mut plant, 11.0 * MONTH_S);
+        assert!(st.contract.is_none());
+        assert!(st.baseload_until.is_none());
+    }
+
+    #[test]
+    fn contract_counter_and_early_termination() {
+        let (mut plant, mut st) = on_line_at(91.0 * DAY_S + 9.0 * HOUR_S);
+        st.request_contract(Some(1100.0), 6, false, plant.time);
+        plant.time += 400.0;
+        st.tick(&mut plant, 400.0);
+        let o = st.offer.clone().unwrap();
+        assert!(o.mw < 1100.0, "too much for the spring nights");
+        st.request_contract(Some(o.mw + 150.0), 6, false, plant.time);
+        plant.time += 400.0;
+        st.tick(&mut plant, 400.0);
+        let mid = st.offer.clone().unwrap();
+        assert!(mid.last && mid.mw > o.mw);
+        assert!(st.accept_offer(plant.time));
+        st.fines.clear();
+        assert!(st.terminate_contract(plant.time));
+        assert!(st.fines.last().unwrap().0 > 1e6, "termination fee");
+        assert!(st.contract.is_none());
     }
 }

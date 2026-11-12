@@ -245,6 +245,13 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
   accepted, declined, or countered (they meet you in the middle once, then
   hold firm); leave the output or the duration blank and dispatch proposes
   it. Grid tab shows system load, state and a 24-hour forecast
+- Long-term contracts (PPAs, Grid tab or "contract 900 MW for a year,
+  seasonal"): 1 month to 5 years, flat or shaped by season, sized to what
+  the system can absorb each month; ~93 % of market for a month down to
+  80 % for five years, +3 % shaped; negotiated like base-load offers; no
+  dispatch calls while it runs (auto warp can run for months); shortfalls
+  (including trips) bought in at 1.2x market and billed daily; early
+  termination fee 10 % of the remaining value
 - Grid negotiation: ask dispatch to lower your commitment (derate: usually
   approved, replacement power charged) or offer more output (taken when the
   system needs it, capacity premium paid), from the Grid tab or by message

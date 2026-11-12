@@ -377,6 +377,8 @@ fn api_authed(
                 "reached": st.reached,
                 "baseload_until": st.baseload_until,
                 "offer": st.offer,
+                "contract": st.contract,
+                "shortfall_owed": st.shortfall_owed,
                 "system_load": st.system_load(),
                 "grid_state": nr_game::grid_model::state(st.system_load()),
                 "calendar": nr_game::grid_model::label(st.calendar_s),
@@ -591,6 +593,38 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
                 return Err("the unit must be on-line to request a base-load block".into());
             }
             w.station.request_baseload(b.target_mwe, b.hours, t);
+            Ok(())
+        }
+        "contract" => {
+            #[derive(Deserialize)]
+            struct ContractReq {
+                target_mwe: Option<f64>,
+                #[serde(default = "twelve")]
+                months: u32,
+                #[serde(default)]
+                shaped: bool,
+                #[serde(default)]
+                terminate: bool,
+            }
+            fn twelve() -> u32 {
+                12
+            }
+            let c: ContractReq = serde_json::from_str(body).map_err(parse)?;
+            if c.terminate {
+                return if w.station.terminate_contract(t) {
+                    Ok(())
+                } else {
+                    Err("no contract in force".into())
+                };
+            }
+            if !w.plant.tg.breaker {
+                return Err("the unit must be on-line to negotiate a contract".into());
+            }
+            if w.station.contract.is_some() {
+                return Err("a contract is already in force: terminate it first".into());
+            }
+            w.station
+                .request_contract(c.target_mwe, c.months, c.shaped, t);
             Ok(())
         }
         "offer" => {

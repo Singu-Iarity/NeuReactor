@@ -50,6 +50,30 @@ export function build(root, ctx) {
   blMw.addEventListener("keydown", e => e.stopPropagation());
   const blHours = h("select", { class: "hmi-dest" }, ...[["", "grid decides"], [12, "12 h"], [24, "24 h"], [72, "3 days"], [168, "1 week"]].map(([v, l]) => h("option", { value: v }, l)));
   blHours.value = "24";
+  // Long-term contract (PPA).
+  const ppaMw = h("input", { class: "save-name", type: "number", min: 0, step: 25, style: "width:90px", title: "Contract output [MWe net] (blank = grid proposes)" });
+  ppaMw.addEventListener("keydown", e => e.stopPropagation());
+  const ppaMonths = h("select", { class: "hmi-dest" }, ...[[1, "1 month"], [3, "3 months"], [6, "6 months"], [12, "1 year"], [24, "2 years"], [60, "5 years"]].map(([v, l]) => h("option", { value: v }, l)));
+  ppaMonths.value = "12";
+  const ppaShape = h("select", { class: "hmi-dest" }, h("option", { value: "flat" }, "flat"), h("option", { value: "shaped" }, "seasonal"));
+  const ppaStatus = h("div", { class: "card-sub" }, "");
+  const requestContract = async () => {
+    play("pickup");
+    const body = { months: +ppaMonths.value, shaped: ppaShape.value === "shaped" };
+    if (+ppaMw.value > 0) body.target_mwe = +ppaMw.value;
+    const r = await api("/station/contract", body);
+    if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
+    ctx.pollStation();
+  };
+  const terminateContract = async () => {
+    if (!confirm("Terminate the contract early? The termination fee is 10 % of the remaining contract value.")) return;
+    const r = await api("/station/contract", { terminate: true });
+    if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); }
+    ctx.pollStation();
+  };
+  const ppaBox = h("div", {}, h("div", { class: "row tight" }, ppaMw, ppaMonths, ppaShape,
+    h("button", { class: "btn", onclick: requestContract }, "REQUEST CONTRACT"),
+    h("button", { class: "btn", onclick: terminateContract }, "TERMINATE")), ppaStatus);
   // System demand and grid offers.
   const sysCal = h("div", { class: "sys-cal" }, "");
   const sysLoad = readout("SYSTEM LOAD [% OF PEAK]", { digits: 0, size: "big" });
@@ -133,6 +157,8 @@ export function build(root, ctx) {
           offerBox,
           plate("ASK DISPATCH FOR A NEW COMMITMENT", "small"), changeBox,
           plate("BASE-LOAD BLOCK", "small"), baseBox,
+          plate("LONG-TERM CONTRACT (PPA)", "small"), ppaBox,
+          h("p", { class: "note" }, "A power purchase agreement sells a fixed output for months or years: lower price the longer the term (about 93 % of market for a month down to 80 % for five years), +3 % if shaped by season (more in winter, less in spring / autumn). No dispatch calls while it runs. Shortfalls (including trips) are bought in at 1.2x market, billed daily; early termination costs 10 % of the remaining value."),
           h("p", { class: "note" }, "Base-load: hold a fixed output for hours or days with no load-following requests. Paid at 92 % of the price while on target (no flexibility premium)."),
           h("p", { class: "note" }, "Below your commitment = derate: usually approved, you pay replacement power (an hour of the shortfall at market price). Above = offer more: taken only when the system needs it, with a capacity premium on the extra output; capped at what your unit can make.")))),
     h("section", { class: "sect wide", "data-section": "grid.station" }, plate("SYSTEM DEMAND"),
@@ -247,7 +273,11 @@ export function build(root, ctx) {
     // Prefill the matching request box with dispatch's numbers once per offer.
     const ok = o ? `${o.kind}:${o.mw}:${o.hours}:${o.last}` : "";
     if (ok && offerBox.dataset.k !== ok) {
-      if (o.kind === "baseload") {
+      if (o.kind === "contract") {
+        ppaMw.value = o.mw;
+        ppaMonths.value = String(o.months);
+        ppaShape.value = o.shaped ? "shaped" : "flat";
+      } else if (o.kind === "baseload") {
         blMw.value = o.mw;
         if ([...blHours.options].some(x => +x.value === o.hours)) blHours.value = String(o.hours);
       } else {
@@ -255,15 +285,23 @@ export function build(root, ctx) {
       }
     }
     offerBox.dataset.k = ok;
-    offerBox.replaceChildren(...(o ? [h("div", { class: "req-card" },
-      h("b", {}, `GRID OFFER${o.last ? " (FINAL)" : ""}: ${o.kind === "baseload" ? `base-load ${o.mw.toFixed(0)} MWe for ${o.hours.toFixed(0)} h` : `commitment ${o.mw.toFixed(0)} MWe net`}`),
+    offerBox.replaceChildren(...(o ? [h("div", { class: "req-card" }, ...[
+      h("b", {}, `GRID OFFER${o.last ? " (FINAL)" : ""}: ${o.kind === "contract" ? `${o.months}-month ${o.shaped ? "seasonal" : "flat"} contract at ${(o.price_mult * 100).toFixed(0)} % of market`
+        : o.kind === "baseload" ? `base-load ${o.mw.toFixed(0)} MWe for ${o.hours.toFixed(0)} h` : `commitment ${o.mw.toFixed(0)} MWe net`}`),
+      o.kind === "contract" ? h("div", { class: "card-sub" }, `Monthly targets [MWe]: ${o.profile.map(v => v.toFixed(0)).join(" · ")}`) : null,
       h("div", { class: "card-sub" }, `expires in ${Math.max(0, (o.expires_at - t.sim_time) / 60).toFixed(0)} min`),
-      h("div", { class: "card-sub" }, o.kind === "baseload"
+      h("div", { class: "card-sub" }, o.kind === "contract"
+        ? "To counter: change the output in the LONG-TERM CONTRACT box (same term and shape) and press REQUEST CONTRACT. A different term or shape gets a fresh offer."
+        : o.kind === "baseload"
         ? "To counter: change the output and/or duration in the BASE-LOAD BLOCK box below and press REQUEST BASE-LOAD. Same duration: they may meet you in the middle once. Different duration: they make a fresh offer sized for it."
         : "To counter: put your output in the NEW COMMITMENT box below and press REQUEST CHANGE. They may meet you in the middle once, then hold firm."),
       h("div", { class: "row tight" },
         h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: true }); ctx.pollStation(); } }, "ACCEPT"),
-        h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: false }); ctx.pollStation(); } }, "DECLINE")))] : []));
+        h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: false }); ctx.pollStation(); } }, "DECLINE"))].filter(Boolean))] : []));
+    const c = st.contract;
+    ppaStatus.textContent = c
+      ? `CONTRACT: month ${c.month + 1} of ${c.months}, target ${c.profile[c.month].toFixed(0)} MWe at ${(c.price_mult * 100).toFixed(0)} % of market, ends in ${((c.end_t - t.sim_time) / 86400).toFixed(0)} days${st.shortfall_owed > 1 ? ` · shortfall owed $${(st.shortfall_owed / 1e3).toFixed(0)}k` : ""}`
+      : "No contract.";
     blStatus.textContent = st.baseload_until ? `BASE-LOAD at ${st.demand_mwe.toFixed(0)} MWe until ${fmt(st.baseload_until)} (${((st.baseload_until - t.sim_time) / 3600).toFixed(1)} h left)` : "Load-following dispatch.";
     const p = st.pending;
     const left = dl => { const m = Math.round((dl - t.sim_time) / 60); return m >= 0 ? `${m} min left` : `${-m} min overdue`; };
