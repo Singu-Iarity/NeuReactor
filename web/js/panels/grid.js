@@ -244,9 +244,23 @@ export function build(root, ctx) {
       }
     }
     const o = st.offer;
+    // Prefill the matching request box with dispatch's numbers once per offer.
+    const ok = o ? `${o.kind}:${o.mw}:${o.hours}:${o.last}` : "";
+    if (ok && offerBox.dataset.k !== ok) {
+      if (o.kind === "baseload") {
+        blMw.value = o.mw;
+        if ([...blHours.options].some(x => +x.value === o.hours)) blHours.value = String(o.hours);
+      } else {
+        changeMw.value = o.mw;
+      }
+    }
+    offerBox.dataset.k = ok;
     offerBox.replaceChildren(...(o ? [h("div", { class: "req-card" },
       h("b", {}, `GRID OFFER${o.last ? " (FINAL)" : ""}: ${o.kind === "baseload" ? `base-load ${o.mw.toFixed(0)} MWe for ${o.hours.toFixed(0)} h` : `commitment ${o.mw.toFixed(0)} MWe net`}`),
-      h("div", { class: "card-sub" }, `expires in ${Math.max(0, (o.expires_at - t.sim_time) / 60).toFixed(0)} min — counter by sending a new request with your number`),
+      h("div", { class: "card-sub" }, `expires in ${Math.max(0, (o.expires_at - t.sim_time) / 60).toFixed(0)} min`),
+      h("div", { class: "card-sub" }, o.kind === "baseload"
+        ? "To counter: change the output and/or duration in the BASE-LOAD BLOCK box below and press REQUEST BASE-LOAD. Same duration: they may meet you in the middle once. Different duration: they make a fresh offer sized for it."
+        : "To counter: put your output in the NEW COMMITMENT box below and press REQUEST CHANGE. They may meet you in the middle once, then hold firm."),
       h("div", { class: "row tight" },
         h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: true }); ctx.pollStation(); } }, "ACCEPT"),
         h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: false }); ctx.pollStation(); } }, "DECLINE")))] : []));

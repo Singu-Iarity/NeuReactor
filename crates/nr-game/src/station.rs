@@ -1115,7 +1115,16 @@ impl Station {
             (Some(mw), Some(h)) => {
                 let mw = mw.min(rated);
                 let c = cap(h);
-                if ask.counter {
+                // A counter with a different duration is a fresh ask: the
+                // previous offer was sized for another period.
+                let same_term = self
+                    .offer
+                    .as_ref()
+                    .is_some_and(|o| o.kind == OfferKind::Baseload && (o.hours - h).abs() < 0.5);
+                if !same_term {
+                    self.offer = None;
+                }
+                if ask.counter && same_term {
                     match self.negotiate(OfferKind::Baseload, mw, c, h, t, rated) {
                         Some(v) if v.is_finite() => self.apply_baseload(v, h, t),
                         Some(_) => {}
@@ -2044,5 +2053,23 @@ mod dispatch_tests {
             o2.hours >= 72.0,
             "at that output they can take it at least as long"
         );
+    }
+
+    #[test]
+    fn countering_with_a_shorter_term_gets_a_fresh_bigger_offer() {
+        let (mut plant, mut st) = on_line_at(91.0 * DAY_S + 9.0 * HOUR_S);
+        st.request_baseload(Some(1100.0), Some(168.0), plant.time);
+        answer(&mut plant, &mut st);
+        let week = st.offer.clone().unwrap();
+        // Counter: a day instead of a week, still asking for 1100.
+        st.request_baseload(Some(1100.0), Some(24.0), plant.time);
+        answer(&mut plant, &mut st);
+        if let Some(day) = st.offer.clone() {
+            assert_eq!(day.hours, 24.0);
+            assert!(!day.last, "fresh offer, not a final position");
+            assert!(day.mw >= week.mw, "a shorter block can be bigger");
+        } else {
+            assert!(st.baseload_until.is_some(), "or approved outright");
+        }
     }
 }
