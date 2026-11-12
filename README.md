@@ -139,6 +139,11 @@ Open the **Career** tab and choose a start year and difficulty.
    - Pick a size on each shop card. Untick "Confirm each purchase" to buy
      with one click.
 
+Research takes about 20 days plus 12 for every year ahead of the calendar
+(up to a year). Running projects can be funded harder from the Career tab:
+**Accelerated** (2× speed) or **Crash programme** (3.5×), at an extra daily
+cost; out of money, they fall back to normal funding.
+
 Use the 1000× / 5000× time buttons to let research and calendar time pass.
 There is no save game yet; a career lasts as long as the server runs.
 

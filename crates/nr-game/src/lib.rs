@@ -98,6 +98,35 @@ pub struct ResearchProject {
     pub cost: f64,
     pub days: f64,
     pub progress_days: f64,
+    /// Funding level: 0 normal, 1 accelerated (2× speed), 2 crash (3.5×).
+    #[serde(default)]
+    pub funding: u8,
+}
+
+/// Research funding levels: (speed multiplier, extra spend per day as a
+/// multiple of the project's normal daily cost).
+pub const FUNDING: [(f64, f64, &str); 3] = [
+    (1.0, 0.0, "Normal"),
+    (2.0, 1.5, "Accelerated"),
+    (3.5, 4.0, "Crash programme"),
+];
+
+impl ResearchProject {
+    /// Normal daily cost (the up-front price spread over the duration).
+    pub fn daily_cost(&self) -> f64 {
+        self.cost / self.days.max(1.0)
+    }
+    /// Extra spend per day at the current funding level.
+    pub fn extra_per_day(&self) -> f64 {
+        self.daily_cost() * FUNDING[self.funding.min(2) as usize].1
+    }
+    pub fn speed(&self) -> f64 {
+        FUNDING[self.funding.min(2) as usize].0
+    }
+    /// Calendar days left at the current funding.
+    pub fn days_left(&self) -> f64 {
+        (self.days - self.progress_days).max(0.0) / self.speed()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -712,8 +741,28 @@ impl Career {
     fn research_terms(&self, u: Unlock) -> (f64, f64) {
         let early = (u.year() as f64 - self.year_fraction()).max(0.0);
         let cost = u.reference_price() * 0.35 * (1.0 + 0.2 * early);
-        let days = (45.0 + 30.0 * early).min(900.0);
+        let days = (20.0 + 12.0 * early).min(365.0);
         (cost, days)
+    }
+
+    /// Change a running project's funding level (0 normal, 1 accelerated,
+    /// 2 crash programme). Extra funding is charged daily.
+    pub fn fund_research(&mut self, u: Unlock, level: u8) -> Result<(), String> {
+        let level = level.min(2);
+        let Some(r) = self.research.iter_mut().find(|r| r.unlock == u) else {
+            return Err("that project is not running".into());
+        };
+        r.funding = level;
+        let (name, extra, label) = (r.name.clone(), r.extra_per_day(), FUNDING[level as usize].2);
+        self.notify(format!(
+            "{name}: {label} funding{}",
+            if extra > 0.0 {
+                format!(" (+${:.0}k per day)", extra / 1e3)
+            } else {
+                String::new()
+            }
+        ));
+        Ok(())
     }
 
     pub fn start_research(&mut self, u: Unlock) -> Result<(), String> {
@@ -740,6 +789,7 @@ impl Career {
             cost,
             days,
             progress_days: 0.0,
+            funding: 0,
         });
         self.notify(format!(
             "Research started: {} ({days:.0} days, ${:.1}M)",
@@ -831,9 +881,23 @@ impl Career {
             self.month_key = key;
         }
 
+        // Extra research funding is spent daily; out of money, projects
+        // fall back to normal funding.
+        let extra: f64 = self.research.iter().map(|r| r.extra_per_day() * days).sum();
+        if extra > 0.0 {
+            if self.money >= extra {
+                self.money -= extra;
+                self.costs_total += extra;
+            } else {
+                for r in &mut self.research {
+                    r.funding = 0;
+                }
+                self.notify("Research funding cut back to normal: not enough money".into());
+            }
+        }
         let mut finished = Vec::new();
         for r in &mut self.research {
-            r.progress_days += days;
+            r.progress_days += days * r.speed();
             if r.progress_days >= r.days {
                 finished.push(r.unlock);
             }

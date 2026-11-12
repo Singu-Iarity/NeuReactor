@@ -464,6 +464,18 @@ fn career_action(w: &mut World, action: &str, body: &str) -> Result<(), String> 
                 .ok_or("no career active")?
                 .buy_diesel_fuel(plant)
         }
+        "research_funding" => {
+            #[derive(Deserialize)]
+            struct FundReq {
+                unlock: nr_api::Unlock,
+                level: u8,
+            }
+            let f: FundReq = serde_json::from_str(body).map_err(parse)?;
+            w.career
+                .as_mut()
+                .ok_or("no career active")?
+                .fund_research(f.unlock, f.level)
+        }
         "research" => {
             let u: nr_api::Unlock = serde_json::from_str(body).map_err(parse)?;
             w.career

@@ -339,3 +339,31 @@ fn critical_plant_and_station_round_trip_through_json() {
     let c2: Career = serde_json::from_str(&cj).unwrap();
     assert_eq!(c2.money, c.money);
 }
+
+#[test]
+fn research_funding_speeds_it_up_at_a_daily_cost() {
+    let idle = Pwr::hot_standby();
+    let mut c = Career::new(1972, Difficulty::Normal);
+    c.phase = Phase::Operating;
+    c.money = 1e10;
+    let u = Unlock::AnalogControllers { era: Era::Dated };
+    c.start_research(u).unwrap();
+    let days = c.research[0].days;
+    assert!(days < 120.0, "research days {days}");
+    c.fund_research(u, 2).unwrap();
+    let before = c.money;
+    c.tick(days / 3.5 * DAY + 3600.0, &idle);
+    assert!(
+        c.available(u),
+        "crash programme finishes in under a third of the time"
+    );
+    assert!(c.money < before - 1e5, "extra funding was charged");
+    // Out of money: falls back to normal funding.
+    let mut d = Career::new(1972, Difficulty::Normal);
+    d.phase = Phase::Operating;
+    d.start_research(u).unwrap();
+    d.fund_research(u, 2).unwrap();
+    d.money = 0.0;
+    d.tick(DAY, &idle);
+    assert_eq!(d.research[0].funding, 0);
+}

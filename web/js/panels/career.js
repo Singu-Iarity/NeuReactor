@@ -140,10 +140,23 @@ export function build(root, ctx) {
       h("button", { class: "btn", onclick: async () => { if (confirm("Abandon this career and return to sandbox?")) { await post("quit"); lastSig = ""; poll(); } } }, "QUIT CAREER"),
     ].filter(Boolean));
     news.replaceChildren(...v.notifications.map(n => h("li", {}, `${n.date}  ${n.text}`)));
-    research.replaceChildren(...v.research.map(p => h("div", { class: "card" },
-      h("div", { class: "card-name" }, p.name),
-      h("div", { class: "progress" }, h("div", { style: `width:${Math.min(100, p.progress_days / p.days * 100)}%` })),
-      h("div", { class: "card-sub" }, `${p.progress_days.toFixed(0)} / ${p.days.toFixed(0)} days`))));
+    // Funding levels: [speed, extra spend per day × normal daily cost, label].
+    const FUNDING = [[1, 0, "NORMAL"], [2, 1.5, "ACCELERATED ×2"], [3.5, 4, "CRASH ×3.5"]];
+    research.replaceChildren(...v.research.map(p => {
+      const lvl = p.funding || 0;
+      const daily = p.cost / Math.max(1, p.days);
+      const left = Math.max(0, p.days - p.progress_days) / FUNDING[lvl][0];
+      return h("div", { class: "card" },
+        h("div", { class: "card-name" }, p.name),
+        h("div", { class: "progress" }, h("div", { style: `width:${Math.min(100, p.progress_days / p.days * 100)}%` })),
+        h("div", { class: "card-sub" }, `${p.progress_days.toFixed(0)} / ${p.days.toFixed(0)} research-days · about ${left.toFixed(0)} days left`),
+        h("div", { class: "size-pick" }, h("span", {}, "FUNDING"),
+          ...FUNDING.map(([, extra, label], i) => h("button", {
+            class: `size-btn ${i === lvl ? "on" : ""}`,
+            title: extra ? `+${M(daily * extra)} per day` : "No extra cost",
+            onclick: async () => { if (await post("research_funding", { unlock: p.unlock, level: i })) poll(); },
+          }, extra ? `${label} +${M(daily * extra * 30)}/mo` : label))));
+    }));
 
     const sig = JSON.stringify([v.phase, v.money > 0, v.year, v.shop, v.research_options.length, v.research.length]);
     if (sig === lastSig) return;
