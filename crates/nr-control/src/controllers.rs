@@ -350,13 +350,13 @@ impl PlantMaster {
     pub fn update(
         &self,
         target_mwe: f64,
-        current_ref: f64,
+        held_target: f64,
         tavg_error: f64,
         pressure_error: f64,
     ) -> f64 {
         if tavg_error.abs() > 3.0 || pressure_error.abs() > 0.4 {
             // Hold load until the plant recovers.
-            current_ref
+            held_target
         } else {
             target_mwe
         }

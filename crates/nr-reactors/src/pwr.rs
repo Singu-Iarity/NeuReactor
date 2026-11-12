@@ -396,7 +396,7 @@ pub struct Pwr {
 
     /// Slowly wandering setpoint error of each automation controller
     /// (analog controllers wander more than digital ones).
-    ctl_bias: BTreeMap<ModuleId, f64>,
+    pub(crate) ctl_bias: BTreeMap<ModuleId, f64>,
 
     // Instruments
     #[serde(skip)]
@@ -1739,8 +1739,17 @@ impl Pwr {
                 .automation
                 .setpoint(ModuleId::PressurizerPressure, "pressure_mpa")
                 .unwrap_or(15.51);
-            let t =
-                ctl::PlantMaster.update(target, self.gov.load_ref, tavg - tref, pressure - p_set);
+            // Hold = leave the turbine target where it is (never feed the
+            // governor's moving load reference back as a new target: that
+            // ratchets load up while steam pressure sags).
+            let prev = self
+                .automation
+                .setpoint(ModuleId::TurbineGovernor, "target_mwe")
+                .unwrap_or(target);
+            // Stop the ramp where the load is, bounded by the old and new
+            // targets so it can never creep past either.
+            let held = self.gov.load_ref.clamp(prev.min(target), prev.max(target));
+            let t = ctl::PlantMaster.update(target, held, tavg - tref, pressure - p_set);
             self.automation
                 .setpoint_set(ModuleId::TurbineGovernor, "target_mwe", t);
         }

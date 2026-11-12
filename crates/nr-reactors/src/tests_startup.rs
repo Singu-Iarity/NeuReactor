@@ -993,3 +993,60 @@ fn several_groups_move_together() {
     );
     assert!(r.is_err());
 }
+
+#[test]
+fn unit_load_hold_never_pushes_turbine_past_target() {
+    // Unit load controller down to ~90 %, then back up: a load raise that
+    // leaves Tavg behind Tref makes the controller hold, and the hold must
+    // not ratchet the turbine target beyond the demanded load.
+    let mut p = Pwr::full_power();
+    for (module, mode) in [
+        (ModuleId::TurbineGovernor, ModuleMode::Auto),
+        (ModuleId::PlantMaster, ModuleMode::Auto),
+    ] {
+        op(&mut p, Command::SetModuleMode { module, mode });
+    }
+    let set = |p: &mut Pwr, v: f64| {
+        op(
+            p,
+            Command::SetSetpoint {
+                module: ModuleId::PlantMaster,
+                key: "target_mwe".into(),
+                value: v,
+            },
+        )
+    };
+    set(&mut p, 900.0);
+    p.advance(1500.0);
+    // A brisk raise so the rods fall behind and Tavg drops below Tref.
+    op(
+        &mut p,
+        Command::SetSetpoint {
+            module: ModuleId::TurbineGovernor,
+            key: "ramp_mw_min".into(),
+            value: 120.0,
+        },
+    );
+    // Rod control aiming 5 °C low: it holds rods back on the
+    // raise, Tavg sags below Tref and the unit load controller holds.
+    p.ctl_bias.insert(ModuleId::RodControl, -5.0);
+    set(&mut p, 1107.0);
+    let mut held = false;
+    let mut peak: f64 = 0.0;
+    for _ in 0..60 {
+        // A governor reading high (controller imprecision, +20 MW).
+        p.ctl_bias.insert(ModuleId::TurbineGovernor, 2.0);
+        p.ctl_bias.insert(ModuleId::RodControl, -5.0);
+        p.advance(30.0);
+        let gov = p
+            .automation
+            .setpoint(ModuleId::TurbineGovernor, "target_mwe")
+            .unwrap_or(0.0);
+        peak = peak.max(gov);
+        held |= reading(&p, "tref_c") - reading(&p, "tavg_c") > 3.0;
+    }
+    assert!(held, "the raise should have left Tavg behind (hold path)");
+    assert!(peak <= 1107.5, "governor target crept to {peak}");
+    // Within the governor's own +20 MW error, no further.
+    assert!(p.gross_mwe < 1135.0, "gross {}", p.gross_mwe);
+}
