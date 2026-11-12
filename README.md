@@ -160,8 +160,9 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
      BREAKER at 12 o'clock. The Auto-Synchronizer can do this in AUTO.
 10. **Load the unit.** Grid dispatch phones in load requests: the phone rings,
     a toast appears and DEMAND flashes in the top bar.
-    - Accept on the Grid tab (or turn on AGC) and the governor ramps to the
-      new target.
+    - Accept on the Grid tab to acknowledge, then raise turbine load
+      yourself (governor target). With the Unit Load Controller in AUTO it
+      takes the new target; with AGC on it accepts and follows by itself.
     - In career, revenue is better when net output stays on demand.
 
 ## What's simulated today (PWR)

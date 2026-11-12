@@ -38,6 +38,22 @@ export function build(root, ctx) {
     if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
     ctx.pollStation();
   } });
+  // ---- earnings
+  const money = v => {
+    if (v === undefined || v === null) return "—";
+    const a = Math.abs(v), sign = v < 0 ? "-" : "";
+    return a >= 1e6 ? `${sign}$${(a / 1e6).toFixed(2)}M` : a >= 1e3 ? `${sign}$${(a / 1e3).toFixed(1)}k` : `${sign}$${a.toFixed(0)}`;
+  };
+  const price = readout("POWER PRICE", { format: v => `$${v.toFixed(0)}/MWh` });
+  const rate = readout("SELLING AT", { format: v => `$${v.toFixed(2)}/MWh` });
+  const revH = readout("REVENUE / HOUR", { format: money, size: "big" });
+  const costH = readout("RUNNING COSTS / HOUR", { format: money });
+  const profitH = readout("PROFIT / HOUR", { format: money, size: "big" });
+  const atDemand = readout("REVENUE AT DEMAND / HOUR", { format: money });
+  const perDay = readout("PROFIT / DAY (AT THIS RATE)", { format: money });
+  const month = readout("THIS MONTH: REVENUE - COSTS", { format: money });
+  const bonus = h("div", { class: "req-status" }, "");
+  const econNote = h("p", { class: "note" }, "");
   const ulc = maStation("UNIT LOAD CONTROLLER", {
     module: "plant_master", pvTag: "gross_mwe", spKey: "target_mwe", spStep: 10, digits: 0, devSpan: 50, range: [0, 1250],
   }, ctx);
@@ -47,6 +63,13 @@ export function build(root, ctx) {
       h("div", { class: "row" }, demandM.el, netM.el,
         h("div", { class: "col" }, demand.el, net.el), h("div", { class: "col" }, gross.el, freq.el),
         h("div", { class: "col" }, plate("DISPATCH INSTRUCTION", "small"), request, h("div", { class: "row tight" }, accept.el, agc.el), perf))),
+    h("section", { class: "sect wide", "data-section": "grid.station" }, plate("EARNINGS"),
+      h("div", { class: "row" },
+        h("div", { class: "col" }, price.el, rate.el, bonus),
+        h("div", { class: "col" }, revH.el, costH.el),
+        h("div", { class: "col" }, profitH.el, perDay.el),
+        h("div", { class: "col" }, atDemand.el, month.el)),
+      econNote),
     h("section", { class: "sect", "data-section": "grid.station" }, plate("UNIT LOAD CONTROL / AGC"),
       h("p", { class: "note" }, "With the Unit Load Controller (plant master) in AUTO and the Grid Dispatch Link installed, AGC follows grid demand automatically."),
       h("div", { class: "row" }, ulc.el)),
@@ -67,6 +90,27 @@ export function build(root, ctx) {
     freq.update(R.grid_freq_hz);
     rec.draw();
     if (!st) return;
+    const e = st.economics;
+    if (e) {
+      price.update(e.price_mwh);
+      rate.update(e.price_mwh * e.multiplier);
+      revH.update(e.revenue_per_h);
+      costH.update(e.cost_per_h);
+      profitH.update(e.profit_per_h);
+      atDemand.update(e.at_demand_per_h);
+      perDay.update(e.profit_per_h * 24);
+      month.update(e.month_revenue == null ? null : e.month_revenue - e.month_costs);
+      const [txt, cls] = !t.generator_breaker ? ["OFF-LINE: NOT SELLING", "bad"]
+        : e.multiplier > 1 ? ["ON DEMAND: +5 % PRICE BONUS", "ok"]
+        : e.multiplier < 1 ? ["OFF DEMAND: -15 % PRICE PENALTY", "bad"]
+        : ["BASE PRICE", "warn"];
+      bonus.textContent = txt;
+      bonus.className = `req-status ${cls}`;
+      const c = e.costs_per_h;
+      econNote.textContent = `Running costs per hour: fuel ${money(c.fuel)}, cooling water ${money(c.water)}, grid power import ${money(c.grid_power)}, maintenance ${money(c.maintenance)}, staff ${money(c.staff)}. `
+        + "Staying within ±3 % of committed demand earns +5 %; off demand after the deadline costs -15 %. "
+        + (e.career ? "Costs are billed at month end (Career tab)." : "Sandbox: typical prices shown, no money changes hands.");
+    }
     const p = st.pending;
     const left = dl => { const m = Math.round((dl - t.sim_time) / 60); return m >= 0 ? `${m} min left` : `${-m} min overdue`; };
     let status = null;

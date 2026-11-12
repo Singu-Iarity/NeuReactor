@@ -153,6 +153,19 @@ const IMPORT_MARKUP: f64 = 1.6;
 /// Diesel fuel price per litre.
 pub const DIESEL_PER_L: f64 = 1.1;
 
+/// Running cost rates right now [$ per hour].
+pub fn hourly_costs(plant: &Pwr, price_mwh: f64, om_per_day: f64) -> Bills {
+    let cw = plant.condenser.cw_pumps.iter().filter(|r| **r).count() as f64;
+    Bills {
+        fuel: plant.q_core.max(0.0) / 1e6 * FUEL_PER_MWH_T,
+        water: WATER_BASE_H + WATER_PER_PUMP_H * cw,
+        grid_power: plant.elec.import_mw * price_mwh * IMPORT_MARKUP,
+        maintenance: 0.6 * om_per_day / 24.0,
+        staff: 0.4 * om_per_day / 24.0,
+        ..Bills::default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Career {
     pub start_year: i32,
@@ -720,13 +733,13 @@ impl Career {
             self.month_revenue += revenue;
         }
         // Accrue running costs; they are billed at the end of the month.
+        let r = hourly_costs(plant, self.price_mwh, self.om_per_day);
         let b = &mut self.bills;
-        b.fuel += plant.q_core.max(0.0) / 1e6 * hours * FUEL_PER_MWH_T;
-        let cw = plant.condenser.cw_pumps.iter().filter(|r| **r).count() as f64;
-        b.water += (WATER_BASE_H + WATER_PER_PUMP_H * cw) * hours;
-        b.grid_power += plant.elec.import_mw * hours * self.price_mwh * IMPORT_MARKUP;
-        b.maintenance += 0.6 * self.om_per_day * days;
-        b.staff += 0.4 * self.om_per_day * days;
+        b.fuel += r.fuel * hours;
+        b.water += r.water * hours;
+        b.grid_power += r.grid_power * hours;
+        b.maintenance += r.maintenance * hours;
+        b.staff += r.staff * hours;
         // Unplanned loss of generation: the grid operator penalises the
         // sudden loss of the unit's output.
         if self.was_online && !plant.tg.breaker && !plant.breaker_opened_by_operator {

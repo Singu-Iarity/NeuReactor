@@ -287,6 +287,7 @@ fn api_authed(
                 "messages": st.messages.iter().rev().take(80).collect::<Vec<_>>(),
                 "unacked": st.unacked(),
                 "reached": st.reached,
+                "economics": economics(&w),
                 "deadline_missed": st.deadline_missed,
                 "sim_time": w.plant.time,
             });
@@ -446,24 +447,25 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
         }
         "accept" => {
             let target = w.station.accept(t).ok_or("no pending load request")?;
-            // Hand the new load to the unit load controller if it is in AUTO,
-            // otherwise straight to the turbine governor.
-            let gross = target + w.plant.house_load();
-            let module = if w.plant.automation.mode(modules::ModuleId::PlantMaster)
-                == modules::ModuleMode::Auto
+            // Accepting only acknowledges the instruction. The operator then
+            // changes turbine load, unless the unit load controller is in
+            // AUTO, in which case it takes the new target.
+            if w.plant.automation.mode(modules::ModuleId::PlantMaster) == modules::ModuleMode::Auto
+                && w.plant
+                    .automation
+                    .owned
+                    .contains(&modules::ModuleId::PlantMaster)
             {
-                modules::ModuleId::PlantMaster
-            } else {
-                modules::ModuleId::TurbineGovernor
-            };
-            let _ = w.plant.command(
-                &Command::SetSetpoint {
-                    module,
-                    key: "target_mwe".into(),
-                    value: gross,
-                },
-                &Origin::Operator,
-            );
+                let gross = target + w.plant.house_load();
+                let _ = w.plant.command(
+                    &Command::SetSetpoint {
+                        module: modules::ModuleId::PlantMaster,
+                        key: "target_mwe".into(),
+                        value: gross,
+                    },
+                    &Origin::Operator,
+                );
+            }
             Ok(())
         }
         "agc" => {
@@ -476,4 +478,33 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
         }
         _ => Err("unknown station action".into()),
     }
+}
+
+/// Revenue / cost rates for the grid panel (career prices, or typical
+/// prices in sandbox).
+fn economics(w: &World) -> serde_json::Value {
+    let plant = &w.plant;
+    let (price, om, career) = match &w.career {
+        Some(c) => (c.price_mwh, c.om_per_day, true),
+        None => (45.0, 120_000.0, false),
+    };
+    let net = plant.gross_mwe - plant.house_load();
+    let mult = w.station.revenue_multiplier(plant);
+    let selling = plant.tg.breaker && net > 0.0;
+    let revenue_h = if selling { net * price * mult } else { 0.0 };
+    let costs = nr_game::hourly_costs(plant, price, om);
+    let demand = w.station.demand_mwe;
+    json!({
+        "career": career,
+        "price_mwh": price,
+        "multiplier": mult,
+        "net_mwe": net,
+        "revenue_per_h": revenue_h,
+        "cost_per_h": costs.payable(),
+        "costs_per_h": costs,
+        "profit_per_h": revenue_h - costs.payable(),
+        "at_demand_per_h": if demand > 0.0 { demand * price * 1.05 } else { 0.0 },
+        "month_revenue": w.career.as_ref().map(|c| c.month_revenue),
+        "month_costs": w.career.as_ref().map(|c| c.bills.payable()),
+    })
 }
