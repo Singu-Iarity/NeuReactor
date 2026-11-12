@@ -79,6 +79,18 @@ export function build(root, ctx) {
   const sysLoad = readout("SYSTEM LOAD [% OF PEAK]", { digits: 0, size: "big" });
   const sysState = h("div", { class: "req-status" }, "");
   const fcBars = h("div", { class: "fc-bars" });
+  // Wholesale market: real-time price, day-ahead prices, tariff toggle.
+  const spot = readout("REAL-TIME PRICE", { format: v => `$${v.toFixed(2)}/MWh`, size: "big" });
+  const daBars = h("div", { class: "fc-bars" });
+  const daRange = h("div", { class: "card-sub" }, "");
+  const mktMode = h("select", { class: "hmi-dest", title: "Sell at the wholesale market price, or at a fixed tariff" },
+    h("option", { value: "market" }, "WHOLESALE MARKET"), h("option", { value: "tariff" }, "FIXED TARIFF"));
+  mktMode.addEventListener("change", async () => {
+    play("button");
+    await api("/station/market", { on: mktMode.value === "market" });
+    ctx.pollStation();
+  });
+  const bidsBox = h("div", {});
   const offerBox = h("div", {});
   const blStatus = h("div", { class: "card-sub" }, "");
   const requestBaseload = async () => {
@@ -106,7 +118,7 @@ export function build(root, ctx) {
     const a = Math.abs(v), sign = v < 0 ? "-" : "";
     return a >= 1e6 ? `${sign}$${(a / 1e6).toFixed(2)}M` : a >= 1e3 ? `${sign}$${(a / 1e3).toFixed(1)}k` : `${sign}$${a.toFixed(0)}`;
   };
-  const price = readout("POWER PRICE", { format: v => `$${v.toFixed(0)}/MWh` });
+  const price = readout("MARKET PRICE NOW", { format: v => `$${v.toFixed(0)}/MWh` });
   const rate = readout("SELLING AT", { format: v => `$${v.toFixed(2)}/MWh` });
   const revH = readout("REVENUE / HOUR", { format: money, size: "big" });
   const costH = readout("RUNNING COSTS / HOUR", { format: money });
@@ -157,7 +169,7 @@ export function build(root, ctx) {
           offerBox,
           plate("ASK DISPATCH FOR A NEW COMMITMENT", "small"), changeBox,
           plate("BASE-LOAD BLOCK", "small"), baseBox,
-          plate("LONG-TERM CONTRACT (PPA)", "small"), ppaBox,
+          plate("LONG-TERM CONTRACT (PPA)", "small"), ppaBox, bidsBox,
           h("p", { class: "note" }, "A power purchase agreement sells a fixed output for months or years: lower price the longer the term (about 93 % of market for a month down to 80 % for five years), +3 % if shaped by season (more in winter, less in spring / autumn). No dispatch calls while it runs. Shortfalls (including trips) are bought in at 1.2x market, billed daily; early termination costs 10 % of the remaining value."),
           h("p", { class: "note" }, "Base-load: hold a fixed output for hours or days with no load-following requests. Paid at 92 % of the price while on target (no flexibility premium)."),
           h("p", { class: "note" }, "Below your commitment = derate: usually approved, you pay replacement power (an hour of the shortfall at market price). Above = offer more: taken only when the system needs it, with a capacity premium on the extra output; capped at what your unit can make.")))),
@@ -166,6 +178,11 @@ export function build(root, ctx) {
         h("div", { class: "col" }, sysCal, sysLoad.el, sysState),
         h("div", { class: "col" }, plate("NEXT 24 HOURS", "small"), fcBars)),
       h("p", { class: "note" }, "Network demand follows the time of day (overnight trough, evening peak), the week (quieter weekends) and the season (winter and summer peaks). Dispatch asks more of you as demand rises, won't let you derate at peak, only takes extra output when it's needed, and sizes base-load blocks to what the system can absorb through every night and weekend in the period.")),
+    h("section", { class: "sect wide", "data-section": "grid.station" }, plate("WHOLESALE MARKET"),
+      h("div", { class: "row" },
+        h("div", { class: "col" }, mktMode, spot.el),
+        h("div", { class: "col" }, plate("DAY-AHEAD PRICES, NEXT 24 HOURS", "small"), daBars, daRange)),
+      h("p", { class: "note" }, "The unit bids into the market automatically as a price-taker (nuclear runs whatever the price), so there is nothing to bid by hand. The price follows system demand: cheap overnight and on windy days, dear at the evening peak, occasionally below zero on windy spring nights, when every MWh sold costs money. Dispatch performance bonuses and penalties still apply on top. A long-term contract replaces the market price with its fixed price: a hedge. FIXED TARIFF sells everything at the flat base price instead.")),
     h("section", { class: "sect wide", "data-section": "grid.station" }, plate("EARNINGS"),
       h("div", { class: "row" },
         h("div", { class: "col" }, price.el, rate.el, bonus),
@@ -238,24 +255,55 @@ export function build(root, ctx) {
     const e = st.economics;
     if (e) {
       price.update(e.price_mwh);
-      rate.update(e.price_mwh * e.multiplier);
+      rate.update(e.tariff_mwh * e.multiplier);
       revH.update(e.revenue_per_h);
       costH.update(e.cost_per_h);
       profitH.update(e.profit_per_h);
       atDemand.update(e.at_demand_per_h);
       perDay.update(e.profit_per_h * 24);
       month.update(e.month_revenue == null ? null : e.month_revenue - e.month_costs);
+      const pm = e.performance;
       const [txt, cls] = !t.generator_breaker ? ["OFF-LINE: NOT SELLING", "bad"]
-        : st.baseload_until && Math.abs(e.multiplier - 0.92) < 1e-6 ? ["BASE-LOAD ON TARGET: 92 % PRICE", "ok"]
-        : e.multiplier > 1 ? ["ON DEMAND: +5 % PRICE BONUS", "ok"]
-        : e.multiplier < 1 ? ["OFF DEMAND: -15 % PRICE PENALTY", "bad"]
-        : ["BASE PRICE", "warn"];
+        : st.contract ? [`CONTRACT PRICE: ${(st.contract.price_mult * 100).toFixed(0)} % OF AVERAGE MARKET`, "ok"]
+        : st.baseload_until && Math.abs(pm - 0.92) < 1e-6 ? ["BASE-LOAD ON TARGET: 92 % PRICE", "ok"]
+        : pm > 1 ? ["ON DEMAND: +5 % PRICE BONUS", "ok"]
+        : pm < 1 ? ["OFF DEMAND: -15 % PRICE PENALTY", "bad"]
+        : [e.market ? "MARKET PRICE" : "BASE PRICE", "warn"];
       bonus.textContent = txt;
       bonus.className = `req-status ${cls}`;
       const c = e.costs_per_h;
       econNote.textContent = `Running costs per hour: fuel ${money(c.fuel)}, cooling water ${money(c.water)}, grid power import ${money(c.grid_power)}, maintenance ${money(c.maintenance)}, staff ${money(c.staff)}. `
         + "Staying within ±3 % of committed demand earns +5 %; off demand after the deadline costs -15 %. "
         + (e.career ? "Costs are billed at month end (Career tab)." : "Sandbox: typical prices shown, no money changes hands.");
+    }
+    if (st.day_ahead) {
+      if (document.activeElement !== mktMode) mktMode.value = st.market ? "market" : "tariff";
+      spot.update(st.spot_price);
+      const dk = st.day_ahead.map(v => v.toFixed(1)).join();
+      if (daBars.dataset.k !== dk) {
+        daBars.dataset.k = dk;
+        const base = st.economics?.tariff_mwh ?? 45;
+        daBars.replaceChildren(...st.day_ahead.map((v, i) => h("div", { class: "fc-bar", title: `+${i} h: $${v.toFixed(2)}/MWh`,
+          style: `height:${Math.max(4, Math.min(100, (v + 10) / (2.4 * base) * 100))}%;background:${v < 0 ? "#6b4bb3" : v > 1.3 * base ? "#c62f25" : v > base ? "#d39b1f" : "#3a8a50"}` })));
+        const lo = Math.min(...st.day_ahead), hi = Math.max(...st.day_ahead);
+        daRange.textContent = `low $${lo.toFixed(0)} · high $${hi.toFixed(0)} per MWh${lo < 0 ? " · NEGATIVE PRICES AHEAD" : ""}`;
+      }
+    }
+    const bids = st.bids || [];
+    const bk = bids.map(b => `${b.buyer}:${b.price_mult}`).join("|");
+    if (bidsBox.dataset.k !== bk) {
+      bidsBox.dataset.k = bk;
+      bidsBox.replaceChildren(...(bids.length ? [h("div", { class: "req-card" },
+        h("b", {}, "OTHER BUYERS' BIDS (take it or leave it)"),
+        ...bids.map((b, i) => h("div", { class: "row tight" },
+          h("span", { class: "card-sub", style: "flex:1" }, `${b.buyer}: ${b.months} months ${b.shaped ? "seasonal" : `flat ${b.mw.toFixed(0)} MWe`} at ${(b.price_mult * 100).toFixed(1)} % of market, shortfalls charged at ${b.penalty.toFixed(1)}x`),
+          h("button", { class: "btn", onclick: async () => {
+            play("button");
+            const r = await api("/station/contract", { accept_bid: i });
+            if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
+            ctx.pollStation();
+          } }, "SIGN"))),
+        h("div", { class: "card-sub" }, "Higher prices come with stiffer shortfall charges: a trip costs more with a 24/7 industrial buyer. Bids lapse with the dispatch offer."))] : []));
     }
     if (st.calendar) {
       sysCal.textContent = `${st.calendar} · ${st.season}`;
@@ -300,7 +348,7 @@ export function build(root, ctx) {
         h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: false }); ctx.pollStation(); } }, "DECLINE"))].filter(Boolean))] : []));
     const c = st.contract;
     ppaStatus.textContent = c
-      ? `CONTRACT: month ${c.month + 1} of ${c.months}, target ${c.profile[c.month].toFixed(0)} MWe at ${(c.price_mult * 100).toFixed(0)} % of market, ends in ${((c.end_t - t.sim_time) / 86400).toFixed(0)} days${st.shortfall_owed > 1 ? ` · shortfall owed $${(st.shortfall_owed / 1e3).toFixed(0)}k` : ""}`
+      ? `CONTRACT: month ${c.month + 1} of ${c.months}, target ${c.profile[c.month].toFixed(0)} MWe at ${(c.price_mult * 100).toFixed(0)} % of market (${c.buyer}), ends in ${((c.end_t - t.sim_time) / 86400).toFixed(0)} days${st.shortfall_owed > 1 ? ` · shortfall owed $${(st.shortfall_owed / 1e3).toFixed(0)}k` : ""}`
       : "No contract.";
     blStatus.textContent = st.baseload_until ? `BASE-LOAD at ${st.demand_mwe.toFixed(0)} MWe until ${fmt(st.baseload_until)} (${((st.baseload_until - t.sim_time) / 3600).toFixed(1)} h left)` : "Load-following dispatch.";
     const p = st.pending;

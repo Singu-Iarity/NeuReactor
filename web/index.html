@@ -32,7 +32,7 @@
     <div class="warpctl" title="Auto time warp: runs fast while the unit is steady on its grid target, and drops back as soon as the grid asks for a change or anything needs you">
       <button id="warp">AUTO WARP</button>
       <select id="warp-factor">
-        <option value="100">100×</option><option value="300">300×</option><option value="1000" selected>1000×</option><option value="5000">5000×</option>
+        <option value="100">100×</option><option value="300">300×</option><option value="1000" selected>1000×</option><option value="5000">5000×</option><option value="21600" title="Cruise: contract / base-load only">6 h/s</option><option value="86400" title="Cruise: contract / base-load only">1 day/s</option><option value="604800" title="Cruise: contract / base-load only">1 week/s</option>
       </select>
       <select id="ramp-factor" title="Speed while ramping to a new commitment (after you set the turbine load target)">
         <option value="5">ramp 5×</option><option value="20" selected>ramp 20×</option><option value="60">ramp 60×</option>

@@ -228,9 +228,10 @@ function render() {
   $("#warp").classList.toggle("active", !!t.warping);
   if (document.activeElement !== $("#warp-factor") && t.warp_factor) $("#warp-factor").value = String(t.warp_factor);
   if (document.activeElement !== $("#ramp-factor") && t.ramp_factor) $("#ramp-factor").value = String(t.ramp_factor);
+  const warpLabel = f => f >= 604800 ? "1 week/s" : f >= 86400 ? "1 day/s" : f >= 21600 ? "6 h/s" : `${f}×`;
   $("#warp-state").textContent = !t.auto_warp ? ""
     : t.warp_stage === "ramp" ? `RAMPING ${t.time_scale}× to demand`
-    : t.warping ? `WARPING ${t.warp_factor}×` : `HOLD: ${t.warp_reason || "…"}`;
+    : t.warping ? (t.time_scale > 5000 ? `CRUISING ${warpLabel(t.time_scale)} (plant held steady)` : `WARPING ${t.time_scale}×`) : `HOLD: ${t.warp_reason || "…"}`;
   $("#warp-state").className = `warp-state ${t.warping ? "go" : t.auto_warp ? "hold" : ""}`;
   if (lastWarping && !t.warping && t.auto_warp) toast(`Auto warp slowed down: ${t.warp_reason}`);
   lastWarping = !!t.warping;

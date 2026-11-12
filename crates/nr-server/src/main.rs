@@ -68,6 +68,16 @@ fn main() {
 /// Auto time warp: speed up while the unit is steady on its dispatch target
 /// with nothing needing attention; slow back down the moment a new grid
 /// request arrives, output leaves the target band, or an alarm comes in.
+/// Highest time scale the physics is stepped at; above it the auto warp
+/// cruises (steady plant, calendar and economics only).
+const PHYSICS_WARP_MAX: f64 = 5000.0;
+
+/// Cruising: auto warp steady on a contract / base-load block faster than
+/// the physics can run.
+fn cruising(w: &World) -> bool {
+    w.warping && w.warp_stage == "warp" && w.time_scale > PHYSICS_WARP_MAX
+}
+
 fn auto_warp(w: &mut World) {
     if !w.auto_warp {
         if w.warping {
@@ -124,8 +134,16 @@ fn auto_warp(w: &mut World) {
             ("ramp", String::new())
         }
     };
+    // Cruise speeds (above the physics limit) only while a contract or
+    // base-load block holds the output steady.
+    let long_term = st.contract.is_some() || st.baseload_until.is_some();
+    let warp = if long_term {
+        w.warp_factor
+    } else {
+        w.warp_factor.min(PHYSICS_WARP_MAX)
+    };
     let scale = match stage {
-        "warp" => Some(w.warp_factor),
+        "warp" => Some(warp),
         "ramp" => Some(w.ramp_factor.min(w.warp_factor)),
         _ => None,
     };
@@ -183,6 +201,18 @@ fn sim_loop(world: Arc<Mutex<World>>) {
         // Cap work per tick so a huge time scale cannot starve the API.
         let mut steps = 0;
         let t0 = w.plant.time;
+        if cruising(&w) {
+            // Keep the plant live for a few seconds of physics (alarms,
+            // instruments), then move time on with the plant held steady.
+            // At most six hours per tick so contract months, bills and
+            // dispatch messages are still seen in order.
+            for _ in 0..100 {
+                w.plant.step();
+            }
+            let jump = (debt - 100.0 * dt).clamp(0.0, 21_600.0);
+            w.plant.time += jump;
+            debt = 0.0;
+        }
         while debt >= dt && steps < 20_000 {
             w.plant.step();
             debt -= dt;

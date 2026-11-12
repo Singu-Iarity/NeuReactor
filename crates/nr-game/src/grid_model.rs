@@ -48,6 +48,40 @@ pub fn system_load(cal_s: f64) -> f64 {
     (season * daily * weekly + noise).clamp(0.45, 1.0)
 }
 
+/// Wind / solar availability for a day (0 calm .. 1 very windy),
+/// deterministic per calendar day.
+fn wind(cal_s: f64) -> f64 {
+    let d = (cal_s / 86_400.0).floor();
+    ((d * 78.233).sin() * 43_758.545).fract().abs()
+}
+
+/// Wholesale price [$/MWh at a $45 average] from system load: a merit
+/// order (cheap plants at the base, expensive peakers at the top) less a
+/// renewable surplus on windy days, which can push quiet nights negative.
+fn merit_order(load: f64, wind: f64) -> f64 {
+    let base = 12.0 + 100.0 * (load - 0.5) + 2500.0 * (load - 0.88).max(0.0).powi(2);
+    let surplus = if load < 0.62 { 18.0 } else { 6.0 };
+    base - surplus * wind.powi(2)
+}
+
+/// Average of the merit-order price over a year (normalisation).
+const MARKET_MEAN: f64 = 31.7;
+
+/// Day-ahead price relative to the average market price (forecast: no
+/// real-time noise).
+pub fn day_ahead_factor(cal_s: f64) -> f64 {
+    let load = system_load(cal_s);
+    merit_order(load, wind(cal_s)) / MARKET_MEAN
+}
+
+/// Real-time price relative to the average: day-ahead plus balancing
+/// noise (deterministic per 5-minute interval).
+pub fn real_time_factor(cal_s: f64) -> f64 {
+    let k = (cal_s / 300.0).floor();
+    let noise = (((k * 39.346).sin() * 43_758.545).fract() - 0.5) * 0.12;
+    day_ahead_factor(cal_s) + noise
+}
+
 /// Lowest, average and highest system load over the next `hours`.
 pub fn load_window(cal_s: f64, hours: f64) -> (f64, f64, f64) {
     let n = (hours.max(1.0) * 2.0).ceil() as usize;
@@ -167,5 +201,18 @@ mod tests {
     fn calendar_label() {
         assert_eq!(label(D + 18.5 * H), "Tue 2 Jan 18:30");
         assert_eq!(label(31.0 * D), "Thu 1 Feb 00:00");
+    }
+
+    #[test]
+    fn market_price_follows_demand_and_averages_out() {
+        // Year-round average close to 1 (the base price).
+        let n = 365 * 24;
+        let avg: f64 = (0..n).map(|h| day_ahead_factor(h as f64 * H)).sum::<f64>() / n as f64;
+        assert!((avg - 1.0).abs() < 0.08, "average price factor {avg}");
+        // Winter evening peak is dear, spring night cheap.
+        assert!(day_ahead_factor(D + 18.5 * H) > 1.3);
+        assert!(day_ahead_factor(97.0 * D + 4.0 * H) < 0.7);
+        // Some hours in the year go negative (windy quiet nights).
+        assert!((0..n).any(|h| day_ahead_factor(h as f64 * H) < 0.0));
     }
 }

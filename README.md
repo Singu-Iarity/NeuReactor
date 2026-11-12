@@ -38,6 +38,12 @@ Scenarios: `steady`, `scram`, `load-follow`, `rcp-trip`, `xenon`.
   shows why. Once the load target matches the commitment it **ramps** at
   the ramp speed (5× / 20× / 60×) while output moves, then warps once on
   demand. Choosing a speed by hand turns auto warp off.
+- **Cruise speeds** (6 h/s, 1 day/s, 1 week/s) for long-term contracts and
+  base-load blocks: while steady on the commitment the plant is held as it
+  is and only the calendar, contract, market, career and research move on
+  (a few seconds of physics still run every tick so alarms are live). Any
+  hold condition, or a new monthly contract target, drops out of cruise.
+  Without a contract or block, auto warp stops at 5000×.
 - **Base-load blocks** (Grid tab, or message Grid Dispatch "baseload 1000 MW
   for 3 days"): hold a fixed output for 12 h to a week with no
   load-following requests, paid at 92 % of the price while on target.
@@ -252,6 +258,17 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
   dispatch calls while it runs (auto warp can run for months); shortfalls
   (including trips) bought in at 1.2x market and billed daily; early
   termination fee 10 % of the remaining value
+- Contract bidding: a contract request also draws bids from other buyers
+  (retail supplier, energy trader, aluminium smelter, data centre) with
+  their own price and stricter shortfall charges (up to 2.5x market);
+  industrial 24/7 buyers take only flat blocks and longer terms. SIGN one
+  or negotiate with dispatch; bids lapse with dispatch's offer
+- Wholesale market (default; switch to FIXED TARIFF on the Grid tab): the
+  unit sells at a real-time price set by system demand (merit order, minus
+  a renewable surplus on windy days), cheap at night, dear at the evening
+  peak, occasionally negative; day-ahead prices for the next 24 h. Nuclear
+  is a price-taker, so there is no manual bidding. Contracts pay their
+  fixed price instead (a hedge)
 - Grid negotiation: ask dispatch to lower your commitment (derate: usually
   approved, replacement power charged) or offer more output (taken when the
   system needs it, capacity premium paid), from the Grid tab or by message

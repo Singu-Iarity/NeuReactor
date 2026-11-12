@@ -293,7 +293,7 @@ fn api_authed(
                 return error(req, 400, "expected {\"on\": bool, \"factor\": number}");
             };
             if let Some(f) = r.factor {
-                w.warp_factor = f.clamp(5.0, 5000.0);
+                w.warp_factor = f.clamp(5.0, 604_800.0);
             }
             if let Some(f) = r.ramp {
                 w.ramp_factor = f.clamp(1.0, 300.0);
@@ -378,6 +378,10 @@ fn api_authed(
                 "baseload_until": st.baseload_until,
                 "offer": st.offer,
                 "contract": st.contract,
+                "bids": st.bids,
+                "market": st.market,
+                "spot_price": st.spot_price(),
+                "day_ahead": st.day_ahead(),
                 "shortfall_owed": st.shortfall_owed,
                 "system_load": st.system_load(),
                 "grid_state": nr_game::grid_model::state(st.system_load()),
@@ -605,11 +609,19 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
                 shaped: bool,
                 #[serde(default)]
                 terminate: bool,
+                accept_bid: Option<usize>,
             }
             fn twelve() -> u32 {
                 12
             }
             let c: ContractReq = serde_json::from_str(body).map_err(parse)?;
+            if let Some(i) = c.accept_bid {
+                return if w.station.accept_bid(i, t) {
+                    Ok(())
+                } else {
+                    Err("that bid is no longer open".into())
+                };
+            }
             if c.terminate {
                 return if w.station.terminate_contract(t) {
                     Ok(())
@@ -625,6 +637,15 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
             }
             w.station
                 .request_contract(c.target_mwe, c.months, c.shaped, t);
+            Ok(())
+        }
+        "market" => {
+            #[derive(Deserialize)]
+            struct MarketReq {
+                on: bool,
+            }
+            let m: MarketReq = serde_json::from_str(body).map_err(parse)?;
+            w.station.market = m.on;
             Ok(())
         }
         "offer" => {
@@ -705,18 +726,22 @@ fn economics(w: &World) -> serde_json::Value {
     let mult = w.station.revenue_multiplier(plant);
     let selling = plant.tg.breaker && net > 0.0;
     let revenue_h = if selling { net * price * mult } else { 0.0 };
+    let spot = price * w.station.market_factor();
     let costs = nr_game::hourly_costs(plant, price, om);
     let demand = w.station.demand_mwe;
     json!({
         "career": career,
-        "price_mwh": price,
+        "price_mwh": spot,
+        "tariff_mwh": price,
+        "market": w.station.market,
         "multiplier": mult,
+        "performance": w.station.performance_multiplier(plant),
         "net_mwe": net,
         "revenue_per_h": revenue_h,
         "cost_per_h": costs.payable(),
         "costs_per_h": costs,
         "profit_per_h": revenue_h - costs.payable(),
-        "at_demand_per_h": if demand > 0.0 { demand * price * 1.05 } else { 0.0 },
+        "at_demand_per_h": if demand > 0.0 { demand * spot * 1.05 } else { 0.0 },
         "month_revenue": w.career.as_ref().map(|c| c.month_revenue),
         "month_costs": w.career.as_ref().map(|c| c.bills.payable()),
     })

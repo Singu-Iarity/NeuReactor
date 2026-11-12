@@ -514,6 +514,20 @@ pub struct Station {
     pub shortfall_owed: f64,
     #[serde(default)]
     shortfall_billed_at: f64,
+    /// Sell at the wholesale market price (spot, following system demand)
+    /// rather than a fixed tariff.
+    #[serde(default = "yes")]
+    pub market: bool,
+    /// Tariff / reference price passed in by the host [$/MWh].
+    #[serde(default = "default_price")]
+    pub base_price: f64,
+    /// Competing contract bids from other buyers (take it or leave it).
+    #[serde(default)]
+    pub bids: Vec<Offer>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// What a grid counteroffer is for.
@@ -547,6 +561,20 @@ pub struct Offer {
     pub profile: Vec<f64>,
     #[serde(default)]
     pub price_mult: f64,
+    /// Contract buyer.
+    #[serde(default = "dispatch_buyer")]
+    pub buyer: String,
+    /// Shortfall charge as a multiple of the market price.
+    #[serde(default = "default_penalty")]
+    pub penalty: f64,
+}
+
+fn dispatch_buyer() -> String {
+    "Grid Dispatch (system operator)".into()
+}
+
+fn default_penalty() -> f64 {
+    1.2
 }
 
 /// Length of a contract month [s] (365 / 12 days).
@@ -568,6 +596,10 @@ pub struct Contract {
     pub price_mult: f64,
     /// Contract month currently applied.
     pub month: usize,
+    #[serde(default = "dispatch_buyer")]
+    pub buyer: String,
+    #[serde(default = "default_penalty")]
+    pub penalty: f64,
 }
 
 impl Contract {
@@ -657,6 +689,9 @@ impl Station {
             change_counter: false,
             offer: None,
             calendar_s: 0.0,
+            market: true,
+            base_price: 45.0,
+            bids: Vec::new(),
             contract: None,
             contract_ask: None,
             shortfall_owed: 0.0,
@@ -757,13 +792,15 @@ impl Station {
 
     /// Book energy, revenue and running costs for `dt` seconds at the
     /// given power price.
-    pub fn account(&mut self, plant: &Pwr, price_mwh: f64, om_per_day: f64, dt: f64) {
+    pub fn account(&mut self, plant: &Pwr, base_price: f64, om_per_day: f64, dt: f64) {
+        self.base_price = base_price;
+        let price_mwh = self.spot_price();
         self.last_price = price_mwh;
         let h = dt / 3600.0;
         let online = plant.tg.breaker;
         let net = plant.gross_mwe - plant.house_load();
         let revenue = if online && net > 0.0 {
-            net * price_mwh * self.revenue_multiplier(plant) * h
+            net * base_price * self.revenue_multiplier(plant) * h
         } else {
             0.0
         };
@@ -786,7 +823,7 @@ impl Station {
         if let Some(c) = &self.contract {
             let delivered = if online { net.max(0.0) } else { 0.0 };
             let short = (c.target() - delivered - 0.03 * rated_net(plant)).max(0.0);
-            self.shortfall_owed += short * price_mwh * 1.2 * h;
+            self.shortfall_owed += short * price_mwh.max(0.0) * c.penalty * h;
         }
         if self.shortfall_owed > 0.0 && plant.time - self.shortfall_billed_at >= 86_400.0 {
             let owed = std::mem::take(&mut self.shortfall_owed);
@@ -1070,6 +1107,8 @@ impl Station {
             shaped: false,
             profile: Vec::new(),
             price_mult: 0.0,
+            buyer: dispatch_buyer(),
+            penalty: default_penalty(),
         });
         self.say(t, "Grid Dispatch", text, true);
     }
@@ -1079,6 +1118,7 @@ impl Station {
         let Some(o) = self.offer.take() else {
             return false;
         };
+        self.bids.clear();
         self.say(t, "Control Room", "To Grid Dispatch: Agreed.".into(), false);
         match o.kind {
             OfferKind::Change => self.apply_change(o.mw, t),
@@ -1090,6 +1130,7 @@ impl Station {
 
     /// Decline dispatch's counteroffer.
     pub fn decline_offer(&mut self, t: f64) -> bool {
+        self.bids.clear();
         if self.offer.take().is_none() {
             return false;
         }
@@ -1409,6 +1450,8 @@ impl Station {
             shaped,
             profile,
             price_mult: price,
+            buyer: dispatch_buyer(),
+            penalty: default_penalty(),
         });
         self.say(
             t,
@@ -1423,6 +1466,119 @@ impl Station {
         let Some(ask) = self.contract_ask.take() else {
             return;
         };
+        self.answer_contract_dispatch(plant, ask);
+        // Other buyers bid on fresh requests (not on counters).
+        if !ask.counter {
+            if let Some(o) = self.offer.clone() {
+                self.competing_bids(&o, rated_net(plant), t);
+            }
+        }
+    }
+
+    /// Other buyers' bids for the same block: different prices, shortfall
+    /// penalties and terms they will sign. Fixed, take it or leave it.
+    fn competing_bids(&mut self, o: &Offer, rated: f64, t: f64) {
+        self.bids.clear();
+        // (buyer, price premium, shortfall penalty, minimum months,
+        // takes shaped blocks, chance of bidding)
+        let buyers: [(&str, f64, f64, u32, bool, f64); 4] = [
+            (
+                "Northfield Power & Light (retail supplier)",
+                0.015,
+                1.2,
+                1,
+                true,
+                0.85,
+            ),
+            (
+                "Calder Aluminium (smelter, 24/7 load)",
+                0.04,
+                2.0,
+                6,
+                false,
+                0.65,
+            ),
+            (
+                "Hyperscale data centre (24/7 load)",
+                0.06,
+                2.5,
+                12,
+                false,
+                0.55,
+            ),
+            (
+                "Eastern Interconnect Trading (energy trader)",
+                -0.01,
+                1.1,
+                1,
+                true,
+                0.6,
+            ),
+        ];
+        for (name, prem, pen, min_m, shaped_ok, chance) in buyers {
+            if o.months < min_m || (o.shaped && !shaped_ok) || self.rand() > chance {
+                continue;
+            }
+            // Large 24/7 loads want a block they can rely on, not the whole unit.
+            let mw = if shaped_ok {
+                o.mw
+            } else {
+                round25(o.mw.min(0.9 * rated))
+            };
+            let scale = if o.mw > 0.0 { mw / o.mw } else { 1.0 };
+            let jitter = (self.rand() - 0.5) * 0.02;
+            self.bids.push(Offer {
+                kind: OfferKind::Contract,
+                mw,
+                hours: o.hours,
+                expires_at: t + 1800.0,
+                last: true,
+                months: o.months,
+                shaped: o.shaped,
+                profile: o.profile.iter().map(|v| round25(v * scale)).collect(),
+                price_mult: o.price_mult + prem + jitter,
+                buyer: name.into(),
+                penalty: pen,
+            });
+        }
+        if !self.bids.is_empty() {
+            let names: Vec<String> = self
+                .bids
+                .iter()
+                .map(|b| format!("{} {:.0} %", b.buyer, b.price_mult * 100.0))
+                .collect();
+            self.say(
+                t,
+                "Grid Dispatch",
+                format!(
+                    "Market desk: other buyers have bid for the block: {}. Their shortfall terms are stricter.",
+                    names.join("; ")
+                ),
+                true,
+            );
+        }
+    }
+
+    /// Sign with another buyer's bid.
+    pub fn accept_bid(&mut self, i: usize, t: f64) -> bool {
+        if i >= self.bids.len() || self.contract.is_some() {
+            return false;
+        }
+        let b = self.bids.remove(i);
+        self.bids.clear();
+        self.offer = None;
+        self.say(
+            t,
+            "Control Room",
+            format!("To Grid Dispatch: we're signing with {}.", b.buyer),
+            false,
+        );
+        self.apply_contract(&b, t);
+        true
+    }
+
+    fn answer_contract_dispatch(&mut self, plant: &Pwr, ask: ContractAsk) {
+        let t = plant.time;
         if !plant.tg.breaker {
             self.say(
                 t,
@@ -1527,6 +1683,8 @@ impl Station {
             profile: o.profile.clone(),
             price_mult: o.price_mult,
             month: 0,
+            buyer: o.buyer.clone(),
+            penalty: o.penalty,
         };
         let target = c.target();
         let d = (target - self.demand_mwe.max(0.0)).abs();
@@ -1539,7 +1697,8 @@ impl Station {
             t,
             "Grid Dispatch",
             format!(
-                "Contract signed: {} months at {:.0} % of the market price. This month: {target:.0} MWe net. No dispatch instructions until it ends.",
+                "Contract signed with {}: {} months at {:.0} % of the average market price. This month: {target:.0} MWe net. No dispatch instructions until it ends.",
+                c.buyer,
                 c.months,
                 c.price_mult * 100.0
             ),
@@ -1555,7 +1714,7 @@ impl Station {
             return false;
         };
         let remaining_h = ((c.end_t - t) / 3600.0).max(0.0);
-        let fee = 0.10 * remaining_h * c.target() * self.last_price * c.price_mult;
+        let fee = 0.10 * remaining_h * c.target() * self.base_price * c.price_mult;
         self.baseload_until = None;
         self.next_request_at = t + 600.0;
         self.say(t, "Grid Dispatch", format!("Contract terminated early, MCR. Termination fee ${:.2}M. Back on load-following dispatch.", fee / 1e6), true);
@@ -1860,6 +2019,7 @@ impl Station {
         self.was_online = online;
         self.was_tripped = plant.reactor_tripped;
 
+        self.bids.retain(|b| t <= b.expires_at);
         if self.offer.as_ref().is_some_and(|o| t > o.expires_at) {
             self.offer = None;
             self.say(
@@ -2058,8 +2218,49 @@ impl Station {
         events
     }
 
-    /// Revenue multiplier for the current moment.
+    /// Market price relative to the reference price (1 on a fixed tariff).
+    pub fn market_factor(&self) -> f64 {
+        if self.market {
+            grid_model::real_time_factor(self.calendar_s)
+        } else {
+            1.0
+        }
+    }
+
+    /// Real-time price now [$/MWh].
+    pub fn spot_price(&self) -> f64 {
+        self.base_price * self.market_factor()
+    }
+
+    /// Day-ahead prices for the next 24 hours [$/MWh] (the tariff when
+    /// not on the market).
+    pub fn day_ahead(&self) -> Vec<f64> {
+        (0..24)
+            .map(|i| {
+                let f = if self.market {
+                    grid_model::day_ahead_factor(self.calendar_s + i as f64 * 3600.0)
+                } else {
+                    1.0
+                };
+                self.base_price * f
+            })
+            .collect()
+    }
+
+    /// Revenue per MWh relative to the reference price: the contract's
+    /// fixed price (a hedge against the market), otherwise the market
+    /// price times dispatch performance.
     pub fn revenue_multiplier(&self, plant: &Pwr) -> f64 {
+        if let Some(c) = &self.contract {
+            if plant.tg.breaker {
+                return c.price_mult;
+            }
+        }
+        self.performance_multiplier(plant) * self.market_factor()
+    }
+
+    /// Dispatch performance multiplier (on target, late, base-load).
+    pub fn performance_multiplier(&self, plant: &Pwr) -> f64 {
         if self.demand_mwe <= 0.0 || !plant.tg.breaker {
             return 1.0;
         }
@@ -2287,6 +2488,7 @@ mod dispatch_tests {
     fn ledger_books_energy_and_money_per_instruction() {
         let mut plant = Pwr::full_power();
         let mut st = Station::new();
+        st.market = false; // fixed tariff
         st.tick(&mut plant, 0.1);
         let net = plant.gross_mwe - plant.house_load();
         st.issue(plant.time, net, "Test.");
@@ -2574,5 +2776,54 @@ mod dispatch_tests {
         assert!(st.terminate_contract(plant.time));
         assert!(st.fines.last().unwrap().0 > 1e6, "termination fee");
         assert!(st.contract.is_none());
+    }
+
+    #[test]
+    fn other_buyers_bid_and_can_be_signed() {
+        let (mut plant, mut st) = on_line_at(DAY_S + 9.0 * HOUR_S);
+        // Several requests: at least one should attract competing bids.
+        let mut got = false;
+        for _ in 0..6 {
+            st.request_contract(None, 24, false, plant.time);
+            plant.time += 400.0;
+            st.tick(&mut plant, 400.0);
+            if !st.bids.is_empty() {
+                got = true;
+                break;
+            }
+            st.decline_offer(plant.time);
+        }
+        assert!(got, "no competing bids in six tries");
+        let b = st.bids[0].clone();
+        assert!(b.penalty >= 1.1 && b.price_mult > 0.7);
+        assert!(st.accept_bid(0, plant.time));
+        let c = st.contract.as_ref().unwrap();
+        assert_eq!(c.buyer, b.buyer);
+        assert!(st.offer.is_none() && st.bids.is_empty());
+    }
+
+    #[test]
+    fn market_price_moves_and_contract_hedges_it() {
+        let (plant, mut st) = on_line_at(DAY_S + 18.5 * HOUR_S);
+        st.base_price = 45.0;
+        assert!(st.spot_price() > 55.0, "evening peak {}", st.spot_price());
+        st.calendar_s = 97.0 * DAY_S + 4.0 * HOUR_S;
+        assert!(st.spot_price() < 35.0, "spring night {}", st.spot_price());
+        st.market = false;
+        assert_eq!(st.spot_price(), 45.0);
+        assert_eq!(st.day_ahead().len(), 24);
+        st.market = true;
+        st.contract = Some(Contract {
+            start_t: 0.0,
+            end_t: 1e9,
+            months: 12,
+            shaped: false,
+            profile: vec![900.0; 12],
+            price_mult: 0.88,
+            month: 0,
+            buyer: "x".into(),
+            penalty: 1.2,
+        });
+        assert_eq!(st.revenue_multiplier(&plant), 0.88);
     }
 }
