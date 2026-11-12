@@ -671,3 +671,4 @@ body.dc-flicker .ann-win, body.dc-flicker .lamp, body.dc-flicker .fo-win { anima
 .warp-state.hold { color: #e8b23a; }
 .save-name { padding: 4px 6px; font: 12px var(--mono); border: 1px solid #333; border-radius: 3px; }
 .save-table td { padding: 3px 10px 3px 0; }
+.hmi-dest { padding: 4px; border: 1px solid #8794a3; border-radius: 3px; font: 12px system-ui, sans-serif; }

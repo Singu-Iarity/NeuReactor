@@ -165,6 +165,14 @@ fn sim_loop(world: Arc<Mutex<World>>) {
                 }
                 plant.events.push(e);
             }
+            for (amount, why) in std::mem::take(&mut station.credits) {
+                plant.events.push(nr_reactors::PlantEvent::info(&format!(
+                    "Grid premium: {why}"
+                )));
+                if let Some(c) = career.as_mut() {
+                    c.credit(amount, &why);
+                }
+            }
             for (amount, why) in std::mem::take(&mut station.fines) {
                 plant.events.push(nr_reactors::PlantEvent::warn(&format!(
                     "Grid penalty: {why}"

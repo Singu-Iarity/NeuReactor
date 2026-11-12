@@ -380,6 +380,14 @@ impl Career {
         size.unwrap_or_else(|| self.equipment.unit_size())
     }
 
+    /// Pay a credit (e.g. a grid capacity premium).
+    pub fn credit(&mut self, amount: f64, why: &str) {
+        self.money += amount;
+        self.revenue_total += amount;
+        self.month_revenue += amount;
+        self.notify(format!("Credit ${:.2}M: {why}", amount / 1e6));
+    }
+
     /// Charge a fine (e.g. synchronising without grid permission).
     pub fn fine(&mut self, amount: f64, why: &str) {
         self.money -= amount;

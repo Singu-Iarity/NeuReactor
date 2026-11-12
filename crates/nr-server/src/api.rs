@@ -515,14 +515,32 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
             #[derive(Deserialize)]
             struct MsgReq {
                 text: String,
+                #[serde(default)]
+                to: Option<String>,
             }
             let m: MsgReq = serde_json::from_str(body).map_err(parse)?;
             if m.text.len() > 300 {
                 return Err("message too long".into());
             }
-            if w.station.typed(&m.text, t) == Some(nr_game::station::Intent::AcceptLoad) {
+            if w.station.typed(&m.text, m.to.as_deref(), t)
+                == Some(nr_game::station::Intent::AcceptLoad)
+            {
                 return station_action(w, "accept", "{}");
             }
+            Ok(())
+        }
+        "load_change" => {
+            #[derive(Deserialize)]
+            struct ChangeReq {
+                target_mwe: f64,
+            }
+            let c: ChangeReq = serde_json::from_str(body).map_err(parse)?;
+            if !w.plant.tg.breaker || w.station.demand_mwe <= 0.0 {
+                return Err(
+                    "no committed output to change: accept a dispatch instruction first".into(),
+                );
+            }
+            w.station.request_load_change(c.target_mwe, t);
             Ok(())
         }
         "accept" => {

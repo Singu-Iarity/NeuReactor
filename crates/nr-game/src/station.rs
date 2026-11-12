@@ -58,11 +58,52 @@ pub fn location_of(from: &str) -> &'static str {
 }
 
 /// What a free-text message from the control room asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Intent {
     Call(Call),
     /// Accept the pending grid load request.
     AcceptLoad,
+    /// Ask grid dispatch to lower (`raise` = false) or raise the committed
+    /// output, to `mw` (or by `mw` when `relative`).
+    LoadChange {
+        raise: bool,
+        mw: Option<f64>,
+        relative: bool,
+    },
+}
+
+impl Intent {
+    /// The station this request is for.
+    pub fn party(self) -> &'static str {
+        match self {
+            Intent::Call(Call::TurbineRollChecks) => "Turbine Hall",
+            Intent::Call(Call::Maintenance) => "Maintenance",
+            Intent::Call(Call::BoronSample) => "Chemistry",
+            _ => "Grid Dispatch",
+        }
+    }
+}
+
+/// Stations the control room can message.
+pub const STATIONS: [&str; 5] = [
+    "Grid Dispatch",
+    "Turbine Hall",
+    "Maintenance",
+    "Chemistry",
+    "Plant Operator",
+];
+
+/// First number in a message (e.g. "900" in "lower to 900 MW").
+fn number_in(t: &str) -> Option<f64> {
+    let mut num = String::new();
+    for c in t.chars() {
+        if c.is_ascii_digit() || (c == '.' && !num.is_empty()) {
+            num.push(c);
+        } else if !num.is_empty() {
+            break;
+        }
+    }
+    num.parse().ok()
 }
 
 /// Interpret an operator's typed message ("calling for turbine runup",
@@ -70,6 +111,43 @@ pub enum Intent {
 pub fn parse_request(text: &str) -> Option<Intent> {
     let t = text.to_lowercase();
     let any = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
+    // Derate / offer more: a change word plus a load word or a MW figure.
+    let loadish = any(&[
+        "load",
+        "output",
+        "demand",
+        "generation",
+        "mw",
+        "megawatt",
+        "power",
+    ]);
+    let lower = any(&[
+        "lower",
+        "reduce",
+        "decrease",
+        "derate",
+        "cut",
+        "back down",
+        "drop",
+        "less",
+    ]);
+    let raise = any(&[
+        "raise",
+        "increase",
+        "uprate",
+        "more",
+        "extra",
+        "additional",
+        "higher",
+        "pick up",
+    ]);
+    if loadish && (lower ^ raise) && !any(&["boron", "chemistry"]) {
+        return Some(Intent::LoadChange {
+            raise,
+            mw: number_in(&t),
+            relative: any(&[" by "]),
+        });
+    }
     if any(&["boron", "sample", "chemistry", "chem lab", "ppm"]) {
         return Some(Intent::Call(Call::BoronSample));
     }
@@ -193,12 +271,22 @@ pub enum Call {
     SayAgain,
     /// Internal: load acceptance with no request outstanding.
     NoRequest,
+    /// Ask grid dispatch to change the committed output (derate / offer more).
+    LoadChange,
+    /// Internal: a message sent to the wrong station.
+    Misrouted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingReply {
     at: f64,
     call: Call,
+    /// Who answers (misrouted messages).
+    #[serde(default)]
+    who: Option<String>,
+    /// Who the message was really for (misrouted messages).
+    #[serde(default)]
+    meant_for: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +334,19 @@ pub struct Station {
     /// Finished instructions, newest last.
     #[serde(default)]
     pub history: Vec<InstructionLedger>,
+    /// Requested new commitment awaiting dispatch's answer.
+    #[serde(default)]
+    pub change_target: Option<f64>,
+    /// Credits (capacity premiums) to pay out: drained by the host.
+    #[serde(skip)]
+    pub credits: Vec<(f64, String)>,
+    /// Power price last used for accounting [$/MWh].
+    #[serde(default = "default_price")]
+    pub last_price: f64,
+}
+
+fn default_price() -> f64 {
+    45.0
 }
 
 impl Default for Station {
@@ -281,6 +382,9 @@ impl Station {
             totals: Ledger::default(),
             instruction: None,
             history: Vec::new(),
+            change_target: None,
+            credits: Vec::new(),
+            last_price: 45.0,
         }
     }
 
@@ -378,6 +482,7 @@ impl Station {
     /// Book energy, revenue and running costs for `dt` seconds at the
     /// given power price.
     pub fn account(&mut self, plant: &Pwr, price_mwh: f64, om_per_day: f64, dt: f64) {
+        self.last_price = price_mwh;
         let h = dt / 3600.0;
         let online = plant.tg.breaker;
         let net = plant.gross_mwe - plant.house_load();
@@ -437,19 +542,56 @@ impl Station {
 
     /// A free-text message typed on the messaging terminal. Returns the
     /// understood intent (the caller performs `AcceptLoad`).
-    pub fn typed(&mut self, text: &str, t: f64) -> Option<Intent> {
+    pub fn typed(&mut self, text: &str, to: Option<&str>, t: f64) -> Option<Intent> {
         let text = text.trim();
         if text.is_empty() {
             return None;
         }
-        self.say(t, "Control Room", text.to_string(), false);
+        let to = to.filter(|d| STATIONS.contains(d));
+        match to {
+            Some(d) => self.say(t, "Control Room", format!("To {d}: {text}"), false),
+            None => self.say(t, "Control Room", text.to_string(), false),
+        }
         let intent = parse_request(text);
+        // Sent to the wrong station: they answer, puzzled.
+        if let (Some(d), Some(i)) = (to, intent) {
+            if d != i.party() {
+                let at = t + 15.0 + 15.0 * self.rand();
+                self.replies.push(PendingReply {
+                    at,
+                    call: Call::Misrouted,
+                    who: Some(d.to_string()),
+                    meant_for: Some(i.party().to_string()),
+                });
+                return None;
+            }
+        }
         match intent {
+            Some(Intent::LoadChange {
+                raise,
+                mw,
+                relative,
+            }) => {
+                let step = mw.unwrap_or(100.0);
+                let target = if relative || mw.is_none() {
+                    if raise {
+                        self.demand_mwe + step
+                    } else {
+                        self.demand_mwe - step
+                    }
+                } else {
+                    step
+                };
+                self.request_load_change(target, t);
+                return intent;
+            }
             Some(Intent::Call(c)) => self.call(c, t),
             Some(Intent::AcceptLoad) if self.pending.is_none() => {
                 self.replies.push(PendingReply {
                     at: t + 15.0,
                     call: Call::NoRequest,
+                    who: None,
+                    meant_for: None,
                 });
                 return None;
             }
@@ -459,10 +601,133 @@ impl Station {
                 self.replies.push(PendingReply {
                     at,
                     call: Call::SayAgain,
+                    who: to.map(str::to_string),
+                    meant_for: None,
                 });
             }
         }
         intent
+    }
+
+    /// Ask grid dispatch to change the committed output to `target` MWe
+    /// net (derate, or offer more). The answer comes after a short delay.
+    pub fn request_load_change(&mut self, target: f64, t: f64) {
+        self.change_target = Some(target.max(0.0));
+        let verb = if target < self.demand_mwe {
+            "reduce"
+        } else {
+            "raise"
+        };
+        self.say(
+            t,
+            "Control Room",
+            format!("To Grid Dispatch: Requesting to {verb} the unit's committed output to {target:.0} MWe net."),
+            false,
+        );
+        let at = t + 60.0 + 90.0 * self.rand();
+        self.replies.push(PendingReply {
+            at,
+            call: Call::LoadChange,
+            who: None,
+            meant_for: None,
+        });
+    }
+
+    fn credit(&mut self, amount: f64, why: String) {
+        self.totals.revenue += amount;
+        if let Some(i) = &mut self.instruction {
+            i.ledger.revenue += amount;
+        }
+        self.credits.push((amount, why));
+    }
+
+    /// Grid dispatch answers a load change request.
+    fn answer_load_change(&mut self, plant: &Pwr) {
+        let t = plant.time;
+        let Some(want) = self.change_target.take() else {
+            return;
+        };
+        let online = plant.tg.breaker;
+        if !online || self.demand_mwe <= 0.0 {
+            self.say(t, "Grid Dispatch", "MCR, you have no committed output to change. Call when you are on-line and following an instruction.".into(), true);
+            return;
+        }
+        let max = rated_net(plant).max(0.0);
+        let cur = self.demand_mwe;
+        let price = self.last_price;
+        let mins = |d: f64| d.abs() / RAMP_MW_PER_MIN + 30.0;
+        if want < cur - 1.0 {
+            let target = want.max(0.2 * max);
+            if self.rand() < 0.85 {
+                let d = cur - target;
+                let charge = d * price;
+                self.set_commitment(target, t + mins(d) * 60.0, t);
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!("Approved: reduce to {target:.0} MWe net within {:.0} minutes. Replacement power for the {d:.0} MWe shortfall is charged at ${:.0}k.", mins(d), charge / 1e3),
+                    true,
+                );
+                self.fine(charge, format!("replacement power for a {d:.0} MWe derate"));
+            } else {
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!("Denied, MCR: the system is short right now. Hold {cur:.0} MWe."),
+                    true,
+                );
+            }
+        } else if want > cur + 1.0 {
+            if cur >= max - 1.0 {
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!("MCR, your unit is rated {max:.0} MWe net: you are already there."),
+                    true,
+                );
+                return;
+            }
+            let target = want.min(max);
+            if self.rand() < 0.6 {
+                let d = target - cur;
+                let bonus = d * price * 0.5;
+                self.set_commitment(target, t + mins(d) * 60.0, t);
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!("Thanks MCR, we'll take it: raise to {target:.0} MWe net within {:.0} minutes. Capacity premium of ${:.0}k on the extra output.", mins(d), bonus / 1e3),
+                    true,
+                );
+                self.credit(bonus, format!("capacity premium for {d:.0} MWe extra"));
+            } else {
+                self.say(
+                    t,
+                    "Grid Dispatch",
+                    format!("No thanks MCR, the system is long. Hold {cur:.0} MWe."),
+                    true,
+                );
+            }
+        } else {
+            self.say(
+                t,
+                "Grid Dispatch",
+                format!("Copy, no change: hold {cur:.0} MWe."),
+                true,
+            );
+        }
+    }
+
+    /// Change the committed output (a negotiated change counts as a new
+    /// instruction for the ledger).
+    fn set_commitment(&mut self, target: f64, deadline: f64, t: f64) {
+        let req = LoadRequest {
+            id: self.next_id,
+            target_mwe: target,
+            issued_at: t,
+            deadline,
+        };
+        self.next_id += 1;
+        self.commit(&req, t);
     }
 
     /// Place a phone call; the reply comes after a delay.
@@ -482,12 +747,14 @@ impl Station {
             Call::ReportTrip => ("Grid Dispatch", "Reporting a unit trip.", 20.0),
             Call::Maintenance => ("Maintenance", "Requesting a maintenance walkdown.", 300.0),
             Call::BoronSample => ("Chemistry", "Requesting an RCS boron sample.", 600.0),
-            Call::SayAgain | Call::NoRequest => return,
+            Call::SayAgain | Call::NoRequest | Call::LoadChange | Call::Misrouted => return,
         };
         self.say(t, "Control Room", format!("To {to}: {text}"), false);
         self.replies.push(PendingReply {
             at: t + delay,
             call,
+            who: None,
+            meant_for: None,
         });
     }
 
@@ -553,6 +820,8 @@ impl Station {
                 "MCR, please repeat your last message, not understood.".into(),
                 true,
             ),
+            Call::LoadChange => self.answer_load_change(plant),
+            Call::Misrouted => {}
             Call::NoRequest => self.say(
                 t,
                 "Grid Dispatch",
@@ -578,15 +847,28 @@ impl Station {
         let mut events = Vec::new();
         let t = plant.time;
         // Phone replies.
-        let due: Vec<Call> = self
-            .replies
-            .iter()
-            .filter(|r| r.at <= t)
-            .map(|r| r.call)
-            .collect();
+        let due: Vec<PendingReply> = self.replies.iter().filter(|r| r.at <= t).cloned().collect();
         self.replies.retain(|r| r.at > t);
-        for c in due {
-            self.reply(c, plant);
+        for r in due {
+            match (r.call, &r.who) {
+                (Call::Misrouted, Some(who)) => {
+                    let meant = r.meant_for.as_deref().unwrap_or("someone else");
+                    let line = match who.as_str() {
+                        "Chemistry" => format!("Chemistry lab here. MCR, that's not one for us. Try {meant}."),
+                        "Maintenance" => format!("Maintenance shop. Uh, MCR, we can't help with that. Sounds like {meant}."),
+                        "Turbine Hall" => format!("Turbine hall. MCR, say again? That's a call for {meant}, not the turbine floor."),
+                        _ => format!("{who}: MCR, I think you want {meant} for that."),
+                    };
+                    self.say(t, who, line, true);
+                }
+                (Call::SayAgain, Some(who)) => self.say(
+                    t,
+                    who,
+                    "MCR, please repeat your last message, not understood.".into(),
+                    true,
+                ),
+                _ => self.reply(r.call, plant),
+            }
         }
 
         let online = plant.tg.breaker;
@@ -928,7 +1210,7 @@ mod parse_tests {
     #[test]
     fn unclear_message_gets_say_again() {
         let mut s = Station::new();
-        assert!(s.typed("blah blah", 0.0).is_none());
+        assert!(s.typed("blah blah", None, 0.0).is_none());
         assert_eq!(s.replies.len(), 1);
         assert_eq!(s.replies[0].call, Call::SayAgain);
     }
@@ -997,5 +1279,93 @@ mod dispatch_tests {
         st.accept(plant.time);
         assert_eq!(st.history.len(), 1);
         assert_eq!(st.instruction.as_ref().unwrap().ledger.revenue, 0.0);
+    }
+
+    #[test]
+    fn misrouted_message_gets_a_confused_reply() {
+        let mut plant = Pwr::full_power();
+        let mut st = Station::new();
+        assert!(st
+            .typed("calling for turbine runup", Some("Chemistry"), plant.time)
+            .is_none());
+        plant.time += 60.0;
+        st.tick(&mut plant, 60.0);
+        let m = st
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.from == "Chemistry")
+            .unwrap();
+        assert!(m.text.contains("Turbine Hall"), "{}", m.text);
+        assert!(
+            !st.messages.iter().any(|m| m.from == "Turbine Hall"),
+            "the turbine hall never got the request"
+        );
+        assert!(st.replies.is_empty());
+    }
+
+    #[test]
+    fn parses_load_change_requests() {
+        let p = |s: &str| parse_request(s);
+        assert_eq!(
+            p("can we lower load to 900 MW"),
+            Some(Intent::LoadChange {
+                raise: false,
+                mw: Some(900.0),
+                relative: false
+            })
+        );
+        assert_eq!(
+            p("request to raise output by 50 MW"),
+            Some(Intent::LoadChange {
+                raise: true,
+                mw: Some(50.0),
+                relative: true
+            })
+        );
+        assert_eq!(
+            p("calling for turbine runup"),
+            Some(Intent::Call(Call::TurbineRollChecks))
+        );
+    }
+
+    #[test]
+    fn dispatch_answers_derate_and_offer() {
+        let mut plant = Pwr::full_power();
+        let mut st = Station::new();
+        st.tick(&mut plant, 0.1);
+        st.issue(plant.time, 900.0, "Test.");
+        st.accept(plant.time);
+        // Derate: approved most of the time, with a replacement power charge.
+        let mut approved = 0;
+        for _ in 0..10 {
+            st.demand_mwe = 900.0;
+            st.fines.clear();
+            st.request_load_change(800.0, plant.time);
+            plant.time += 200.0;
+            st.tick(&mut plant, 200.0);
+            if st.demand_mwe == 800.0 {
+                approved += 1;
+                assert!((st.fines.last().unwrap().0 - 100.0 * 45.0).abs() < 1.0);
+            } else {
+                assert!(st.fines.is_empty());
+            }
+        }
+        assert!(approved >= 5, "derates approved {approved}/10");
+        // Offer more: capped at the unit's rating, premium paid when taken.
+        let mut taken = 0;
+        for _ in 0..10 {
+            st.demand_mwe = 800.0;
+            st.credits.clear();
+            st.request_load_change(5000.0, plant.time);
+            plant.time += 200.0;
+            st.tick(&mut plant, 200.0);
+            if st.demand_mwe > 800.0 {
+                taken += 1;
+                assert!(st.demand_mwe <= rated_net(&plant) + 1e-6);
+                assert!(!st.credits.is_empty());
+            }
+        }
+        assert!(taken >= 2, "offers taken {taken}/10");
     }
 }

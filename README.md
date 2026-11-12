@@ -226,6 +226,11 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
   hottest, per-quadrant and per-rod-bank-area averages plus calculated fuel
   average; the Core Exit Thermocouple Map upgrade shows every assembly on
   the core map
+- Grid negotiation: ask dispatch to lower your commitment (derate: usually
+  approved, replacement power charged) or offer more output (taken when the
+  system needs it, capacity premium paid), from the Grid tab or by message
+- Messages on the modern HMI need a destination; the wrong station answers,
+  puzzled, and points you to the right one
 - Plant messaging terminal on the reactor board, by installed equipment:
   vintage lamp message panel (lit caller windows, press to read/acknowledge),
   dated green-screen CRT terminal with side pushbuttons and function-key

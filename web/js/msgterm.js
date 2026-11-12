@@ -63,12 +63,16 @@ export function messagingTerminal(ctx) {
   // ------------------------------------------------------------ modern
   const tbody = h("tbody");
   const input = h("input", { class: "hmi-input", type: "text", maxlength: 300, placeholder: "Type a message, e.g. \"calling for turbine runup\" — Enter to send" });
+  const dest = h("select", { class: "hmi-dest", title: "Who the message goes to" },
+    h("option", { value: "" }, "TO: select…"),
+    ...["Grid Dispatch", "Turbine Hall", "Maintenance", "Chemistry", "Plant Operator"].map(d => h("option", { value: d }, d)));
   const send = async () => {
     const text = input.value.trim();
     if (!text) return;
+    if (!dest.value) { toast("Choose who the message is for (TO:)"); play("deny"); dest.focus(); return; }
     input.value = "";
     play("button");
-    const r = await api("/station/message", { text });
+    const r = await api("/station/message", { text, to: dest.value });
     if (!r.ok) { toast(r.error); play("deny"); }
     ctx.pollStation();
   };
@@ -78,7 +82,7 @@ export function messagingTerminal(ctx) {
     h("div", { class: "hmi-table-wrap" }, h("table", { class: "hmi-table" },
       h("thead", {}, h("tr", {}, h("th", {}, "TIME"), h("th", {}, "FROM"), h("th", {}, "LOCATION"), h("th", {}, "MESSAGE"), h("th", {}, "ACK"))), tbody)),
     h("div", { class: "hmi-quick" }, ...REQUESTS.map(([c, , title]) => h("button", { class: "hmi-btn", title, onclick: () => call(c) }, title.split(": ")[1]))),
-    h("div", { class: "hmi-send" }, input, h("button", { class: "hmi-btn primary", onclick: send }, "SEND")));
+    h("div", { class: "hmi-send" }, dest, input, h("button", { class: "hmi-btn primary", onclick: send }, "SEND")));
 
   const el = h("section", { class: "sect wide", "data-section": "reactor.messages" }, plate("PLANT MESSAGING"), vintage, dated, modern);
 

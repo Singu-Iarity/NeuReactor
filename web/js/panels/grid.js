@@ -34,6 +34,17 @@ export function build(root, ctx) {
     if (r.ok) play("pickup");
     ctx.pollStation();
   } });
+  const changeMw = h("input", { class: "save-name", type: "number", min: 0, step: 25, style: "width:90px", title: "New committed output [MWe net]" });
+  changeMw.addEventListener("keydown", e => e.stopPropagation());
+  const requestChange = async () => {
+    const v = +changeMw.value;
+    if (!(v > 0)) { const { toast } = await import("../api.js"); toast("Enter the output you want, in MWe net"); return; }
+    play("pickup");
+    const r = await api("/station/load_change", { target_mwe: v });
+    if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
+    ctx.pollStation();
+  };
+  const changeBox = h("div", { class: "row tight" }, changeMw, h("button", { class: "btn", onclick: requestChange }, "REQUEST CHANGE"));
   const agc = pushbutton("AGC", { onPress: async () => {
     const r = await api("/station/agc", { on: !ctx.station()?.agc });
     if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
@@ -92,7 +103,9 @@ export function build(root, ctx) {
     h("section", { class: "sect wide", "data-section": "grid.station" }, plate("GRID CONTROL STATION"),
       h("div", { class: "row" }, demandM.el, netM.el,
         h("div", { class: "col" }, demand.el, net.el), h("div", { class: "col" }, gross.el, freq.el),
-        h("div", { class: "col" }, plate("DISPATCH INSTRUCTION", "small"), request, h("div", { class: "row tight" }, accept.el, agc.el), perf))),
+        h("div", { class: "col" }, plate("DISPATCH INSTRUCTION", "small"), request, h("div", { class: "row tight" }, accept.el, agc.el), perf,
+          plate("ASK DISPATCH FOR A NEW COMMITMENT", "small"), changeBox,
+          h("p", { class: "note" }, "Below your commitment = derate: usually approved, you pay replacement power (an hour of the shortfall at market price). Above = offer more: taken only when the system needs it, with a capacity premium on the extra output; capped at what your unit can make.")))),
     h("section", { class: "sect wide", "data-section": "grid.station" }, plate("EARNINGS"),
       h("div", { class: "row" },
         h("div", { class: "col" }, price.el, rate.el, bonus),
