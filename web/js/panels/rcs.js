@@ -6,7 +6,7 @@ export const cols = 5;
 export const windows = [
   ["p_high", "PZR PRESS HIGH"], ["p_low", "PZR PRESS LOW"], ["porv", "PZR PORV OPEN"], ["pzr_safety", "PZR SAFETY VALVE OPEN"], ["subcooling", "SUBCOOLING MARGIN LOW"],
   ["pzr_lvl_hi", "PZR LEVEL HIGH"], ["pzr_lvl_lo", "PZR LEVEL LOW"], ["pzr_lvl_dev", "PZR LEVEL DEVIATION"], ["tavg_dev", "TAVG / TREF DEVIATION"], ["tavg_high", "TAVG HIGH"],
-  ["rcs_low_flow", "RCS LOW FLOW"], ["rcp", "RCP STOPPED"], ["heaters_on", "PZR HEATERS ON"], ["spray_open", "PZR SPRAY OPEN"], ["", ""],
+  ["rcs_low_flow", "RCS LOW FLOW"], ["rcp", "RCP STOPPED"], ["heaters_on", "PZR HEATERS ON"], ["spray_open", "PZR SPRAY OPEN"], ["pzr_lo_iso", "PZR LO LEVEL: LETDOWN ISOL / HTRS OFF"],
   ["rcp1_run", "RCP 1 RUNNING"], ["rcp2_run", "RCP 2 RUNNING"], ["rcp3_run", "RCP 3 RUNNING"], ["rcp4_run", "RCP 4 RUNNING"], ["", ""],
 ];
 

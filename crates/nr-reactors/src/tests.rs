@@ -287,3 +287,47 @@ fn core_exit_thermocouples_track_power_and_rods() {
         ts.iter().cloned().fold(f64::MIN, f64::max) - ts.iter().cloned().fold(f64::MAX, f64::min);
     assert!(spread < 3.0, "no power, flat core exit temps ({spread})");
 }
+
+#[test]
+fn low_pzr_level_isolates_letdown_and_auto_recovers() {
+    let mut p = Pwr::full_power();
+    p.rcs_mass -= 20_000.0;
+    p.advance(30.0);
+    assert!(p.letdown_isolated, "letdown isolates at low level");
+    assert_eq!(p.letdown, 0.0);
+    assert_eq!(p.heaters, 0.0, "heaters cut off");
+    // Manual re-open is refused while level is still low.
+    assert!(p
+        .command(&Command::SetLetdown { kg_s: 7.5 }, &Origin::Operator)
+        .is_err());
+    // Level control in AUTO refills and re-establishes letdown.
+    p.advance(2400.0);
+    assert!(!p.letdown_isolated);
+    assert!(p.letdown > 5.0);
+    assert!(
+        (p.pzr_level() - 54.0).abs() < 6.0,
+        "level {}",
+        p.pzr_level()
+    );
+    assert!(!p.reactor_tripped);
+}
+
+#[test]
+fn low_pzr_level_in_manual_needs_operator_charging() {
+    let mut p = Pwr::full_power();
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::PressurizerLevel,
+            mode: ModuleMode::Manual,
+        },
+    );
+    p.rcs_mass -= 20_000.0;
+    p.advance(60.0);
+    assert!(p.letdown_isolated);
+    op(&mut p, Command::SetCharging { kg_s: 20.0 });
+    p.advance(1500.0);
+    assert!(p.pzr_level() > 17.0, "level {}", p.pzr_level());
+    op(&mut p, Command::SetLetdown { kg_s: 7.5 });
+    assert!(!p.letdown_isolated);
+}

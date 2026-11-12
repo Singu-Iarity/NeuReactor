@@ -297,6 +297,8 @@ pub struct Pwr {
     pub spray: f64,
     pub charging: f64,
     pub letdown: f64,
+    /// Letdown isolated (and heaters cut off) on low pressurizer level.
+    pub letdown_isolated: bool,
     pub porv_open: bool,
 
     // Secondary
@@ -348,7 +350,7 @@ pub struct Pwr {
 
     // Instruments
     pub sensors: BTreeMap<&'static str, Sensor>,
-    readings: BTreeMap<&'static str, f64>,
+    pub(crate) readings: BTreeMap<&'static str, f64>,
     pub events: Vec<PlantEvent>,
 
     // Derived quantities cached each step (truth).
@@ -433,6 +435,7 @@ impl Pwr {
             spray: 0.0,
             charging: p.letdown_nominal,
             letdown: p.letdown_nominal,
+            letdown_isolated: false,
             porv_open: false,
             t_steam: p.steam_temp_full,
             sg_mass: p.sg_mass_nominal,
@@ -678,7 +681,7 @@ impl Pwr {
         }
     }
 
-    fn loop_mass(&self) -> f64 {
+    pub(crate) fn loop_mass(&self) -> f64 {
         let p = &self.p;
         steam::rho_primary(self.t_core) * p.vol_core
             + steam::rho_primary(self.t_hot) * p.vol_hot
@@ -768,6 +771,7 @@ impl Pwr {
         self.update_nis_permissives();
         self.run_automation(dt);
         self.run_protection();
+        self.pzr_low_level_interlock();
         self.step_electrical(dt);
         self.step_rods(dt);
         self.step_neutronics(dt);
@@ -797,6 +801,37 @@ impl Pwr {
     /// Station service load drawn by the plant's own equipment [MW].
     pub fn house_load(&self) -> f64 {
         self.elec.house_load_mw
+    }
+
+    /// Low pressurizer level (17 %): letdown isolation valves close and the
+    /// heaters are cut off so they are not uncovered. Letdown stays isolated
+    /// until it is re-established (by the operator, or by the level control
+    /// module in AUTO once level has recovered).
+    fn pzr_low_level_interlock(&mut self) {
+        let lvl = self.r("pzr_level_pct");
+        if lvl < 17.0 {
+            if !self.letdown_isolated {
+                self.letdown_isolated = true;
+                self.events.push(PlantEvent::warn(
+                    "PZR level low (17 %): letdown isolated, pressurizer heaters cut off",
+                ));
+            }
+            self.heaters = 0.0;
+        }
+        if self.letdown_isolated {
+            let auto_restore = self.automation.mode(ModuleId::PressurizerLevel) == ModuleMode::Auto
+                && self.module_usable(ModuleId::PressurizerLevel)
+                && lvl > 25.0;
+            if auto_restore {
+                self.letdown_isolated = false;
+                self.letdown = self.p.letdown_nominal;
+                self.events.push(PlantEvent::info(
+                    "Letdown re-established (level control in AUTO)",
+                ));
+            } else {
+                self.letdown = 0.0;
+            }
+        }
     }
 
     fn step_electrical(&mut self, dt: f64) {
@@ -1957,7 +1992,16 @@ impl Pwr {
             }
             Command::SetPressurizerSpray { fraction } => self.spray = clamp(*fraction, 0.0, 1.0),
             Command::SetCharging { kg_s } => self.charging = clamp(*kg_s, 0.0, self.p.charging_max),
-            Command::SetLetdown { kg_s } => self.letdown = clamp(*kg_s, 0.0, 15.0),
+            Command::SetLetdown { kg_s } => {
+                if self.letdown_isolated && *kg_s > 0.0 {
+                    if self.r("pzr_level_pct") < 17.0 {
+                        return deny("letdown is isolated on low pressurizer level: raise charging and restore level above 17 % first");
+                    }
+                    self.letdown_isolated = false;
+                    self.events.push(PlantEvent::info("Letdown re-established"));
+                }
+                self.letdown = clamp(*kg_s, 0.0, 15.0);
+            }
             Command::SetCoolantPump { index, running } => {
                 if *index >= 4 {
                     return deny("RCP index must be 0-3");
@@ -2540,7 +2584,11 @@ impl Pwr {
             add(rc, "pzr_lvl_hi", "PZR LEVEL HIGH", A);
         } else if lvl < 17.0 {
             add(rc, "pzr_lvl_lo", "PZR LEVEL LOW", A);
-        } else if (lvl - self.pzr_level_program(tavg)).abs() > 5.0 {
+        }
+        if self.letdown_isolated {
+            add(rc, "pzr_lo_iso", "PZR LO LEVEL: LETDOWN ISOL / HTRS OFF", A);
+        }
+        if (17.0..=70.0).contains(&lvl) && (lvl - self.pzr_level_program(tavg)).abs() > 5.0 {
             add(rc, "pzr_lvl_dev", "PZR LEVEL DEVIATION", W);
         }
         if self.heaters > 0.05 {
