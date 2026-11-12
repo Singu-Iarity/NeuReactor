@@ -48,13 +48,21 @@ export function build(root, ctx) {
   // Base-load block: hold a fixed output for hours or days.
   const blMw = h("input", { class: "save-name", type: "number", min: 0, step: 25, style: "width:90px", title: "Base-load output [MWe net] (blank = current commitment)" });
   blMw.addEventListener("keydown", e => e.stopPropagation());
-  const blHours = h("select", { class: "hmi-dest" }, ...[[12, "12 h"], [24, "24 h"], [72, "3 days"], [168, "1 week"]].map(([v, l]) => h("option", { value: v }, l)));
+  const blHours = h("select", { class: "hmi-dest" }, ...[["", "grid decides"], [12, "12 h"], [24, "24 h"], [72, "3 days"], [168, "1 week"]].map(([v, l]) => h("option", { value: v }, l)));
   blHours.value = "24";
+  // System demand and grid offers.
+  const sysCal = h("div", { class: "sys-cal" }, "");
+  const sysLoad = readout("SYSTEM LOAD [% OF PEAK]", { digits: 0, size: "big" });
+  const sysState = h("div", { class: "req-status" }, "");
+  const fcBars = h("div", { class: "fc-bars" });
+  const offerBox = h("div", {});
   const blStatus = h("div", { class: "card-sub" }, "");
   const requestBaseload = async () => {
     play("pickup");
-    const body = { hours: +blHours.value };
+    const body = {};
+    if (blHours.value) body.hours = +blHours.value;
     if (+blMw.value > 0) body.target_mwe = +blMw.value;
+    if (body.hours === undefined && body.target_mwe === undefined) body.hours = 24;
     const r = await api("/station/baseload", body);
     if (!r.ok) { const { toast } = await import("../api.js"); toast(r.error); play("deny"); }
     ctx.pollStation();
@@ -122,10 +130,16 @@ export function build(root, ctx) {
       h("div", { class: "row" }, demandM.el, netM.el,
         h("div", { class: "col" }, demand.el, net.el), h("div", { class: "col" }, gross.el, freq.el),
         h("div", { class: "col" }, plate("DISPATCH INSTRUCTION", "small"), request, h("div", { class: "row tight" }, accept.el, agc.el), perf,
+          offerBox,
           plate("ASK DISPATCH FOR A NEW COMMITMENT", "small"), changeBox,
           plate("BASE-LOAD BLOCK", "small"), baseBox,
           h("p", { class: "note" }, "Base-load: hold a fixed output for hours or days with no load-following requests. Paid at 92 % of the price while on target (no flexibility premium)."),
           h("p", { class: "note" }, "Below your commitment = derate: usually approved, you pay replacement power (an hour of the shortfall at market price). Above = offer more: taken only when the system needs it, with a capacity premium on the extra output; capped at what your unit can make.")))),
+    h("section", { class: "sect wide", "data-section": "grid.station" }, plate("SYSTEM DEMAND"),
+      h("div", { class: "row" },
+        h("div", { class: "col" }, sysCal, sysLoad.el, sysState),
+        h("div", { class: "col" }, plate("NEXT 24 HOURS", "small"), fcBars)),
+      h("p", { class: "note" }, "Network demand follows the time of day (overnight trough, evening peak), the week (quieter weekends) and the season (winter and summer peaks). Dispatch asks more of you as demand rises, won't let you derate at peak, only takes extra output when it's needed, and sizes base-load blocks to what the system can absorb through every night and weekend in the period.")),
     h("section", { class: "sect wide", "data-section": "grid.station" }, plate("EARNINGS"),
       h("div", { class: "row" },
         h("div", { class: "col" }, price.el, rate.el, bonus),
@@ -217,6 +231,25 @@ export function build(root, ctx) {
         + "Staying within ±3 % of committed demand earns +5 %; off demand after the deadline costs -15 %. "
         + (e.career ? "Costs are billed at month end (Career tab)." : "Sandbox: typical prices shown, no money changes hands.");
     }
+    if (st.calendar) {
+      sysCal.textContent = `${st.calendar} · ${st.season}`;
+      sysLoad.update(100 * st.system_load);
+      sysState.textContent = st.grid_state;
+      sysState.className = `req-status ${st.system_load >= 0.92 ? "bad" : st.system_load >= 0.82 ? "warn" : "ok"}`;
+      const fk = st.forecast.map(v => v.toFixed(2)).join();
+      if (fcBars.dataset.k !== fk) {
+        fcBars.dataset.k = fk;
+        fcBars.replaceChildren(...st.forecast.map((v, i) => h("div", { class: "fc-bar", title: `+${i} h: ${(v * 100).toFixed(0)} %`,
+          style: `height:${Math.max(4, (v - 0.4) / 0.6 * 100)}%;background:${v >= 0.92 ? "#c62f25" : v >= 0.82 ? "#d39b1f" : "#3a8a50"}` })));
+      }
+    }
+    const o = st.offer;
+    offerBox.replaceChildren(...(o ? [h("div", { class: "req-card" },
+      h("b", {}, `GRID OFFER${o.last ? " (FINAL)" : ""}: ${o.kind === "baseload" ? `base-load ${o.mw.toFixed(0)} MWe for ${o.hours.toFixed(0)} h` : `commitment ${o.mw.toFixed(0)} MWe net`}`),
+      h("div", { class: "card-sub" }, `expires in ${Math.max(0, (o.expires_at - t.sim_time) / 60).toFixed(0)} min — counter by sending a new request with your number`),
+      h("div", { class: "row tight" },
+        h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: true }); ctx.pollStation(); } }, "ACCEPT"),
+        h("button", { class: "btn", onclick: async () => { play("button"); await api("/station/offer", { accept: false }); ctx.pollStation(); } }, "DECLINE")))] : []));
     blStatus.textContent = st.baseload_until ? `BASE-LOAD at ${st.demand_mwe.toFixed(0)} MWe until ${fmt(st.baseload_until)} (${((st.baseload_until - t.sim_time) / 3600).toFixed(1)} h left)` : "Load-following dispatch.";
     const p = st.pending;
     const left = dl => { const m = Math.round((dl - t.sim_time) / 60); return m >= 0 ? `${m} min left` : `${-m} min overdue`; };

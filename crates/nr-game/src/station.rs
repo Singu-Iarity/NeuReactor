@@ -8,6 +8,7 @@
 //!   grid dispatch, maintenance and chemistry. Replies arrive after a
 //!   realistic delay and change plant state (e.g. turbine hall ready).
 
+use crate::grid_model;
 use nr_api::{Alarm, Severity};
 use nr_reactors::{PlantEvent, Pwr};
 use serde::{Deserialize, Serialize};
@@ -74,8 +75,15 @@ pub enum Intent {
     /// for `hours`.
     Baseload {
         mw: Option<f64>,
-        hours: f64,
+        hours: Option<f64>,
     },
+    /// Counter a grid offer: "how about 900".
+    Counter {
+        mw: Option<f64>,
+        hours: Option<f64>,
+    },
+    /// Decline a grid offer.
+    Decline,
 }
 
 /// Numbers in a message with the word that follows each.
@@ -137,6 +145,31 @@ pub const STATIONS: [&str; 5] = [
     "Plant Operator",
 ];
 
+/// Output and duration in a message: numbers followed by hour / day / week
+/// are durations, the first other number is the output.
+fn mw_and_hours(t: &str) -> (Option<f64>, Option<f64>) {
+    let mut hours = None;
+    let mut mw = None;
+    for (v, unit) in numbers_with_units(t) {
+        if unit.starts_with("hour") || unit.starts_with("hr") || unit == "h" {
+            hours = Some(v);
+        } else if unit.starts_with("day") {
+            hours = Some(v * 24.0);
+        } else if unit.starts_with("week") {
+            hours = Some(v * 168.0);
+        } else if mw.is_none() {
+            mw = Some(v);
+        }
+    }
+    if hours.is_none() && t.contains("a week") {
+        hours = Some(168.0);
+    }
+    if hours.is_none() && t.contains("a day") {
+        hours = Some(24.0);
+    }
+    (mw, hours)
+}
+
 /// First number in a message (e.g. "900" in "lower to 900 MW").
 fn number_in(t: &str) -> Option<f64> {
     let mut num = String::new();
@@ -159,20 +192,42 @@ pub fn parse_request(text: &str) -> Option<Intent> {
     if any(&["base load", "baseload", "base-load"])
         || (t.contains("hold") && any(&["hour", "day", "week"]))
     {
-        let mut hours = 24.0;
-        let mut mw = None;
-        for (v, unit) in numbers_with_units(&t) {
-            if unit.starts_with("hour") || unit.starts_with("hr") || unit == "h" {
-                hours = v;
-            } else if unit.starts_with("day") {
-                hours = v * 24.0;
-            } else if unit.starts_with("week") {
-                hours = v * 168.0;
-            } else if mw.is_none() {
-                mw = Some(v);
-            }
-        }
+        let (mw, hours) = mw_and_hours(&t);
         return Some(Intent::Baseload { mw, hours });
+    }
+    // Answers to a grid offer.
+    if any(&[
+        "how about",
+        "what about",
+        "counter",
+        "could you do",
+        "can you do",
+    ]) {
+        let (mw, hours) = mw_and_hours(&t);
+        if mw.is_some() || hours.is_some() {
+            return Some(Intent::Counter { mw, hours });
+        }
+    }
+    if any(&[
+        "decline",
+        "reject",
+        "no deal",
+        "no thanks",
+        "never mind",
+        "nevermind",
+    ]) {
+        return Some(Intent::Decline);
+    }
+    if any(&[
+        "deal",
+        "agreed",
+        "agree",
+        "sounds good",
+        "we'll take it",
+        "accept",
+    ]) && !any(&["load request"])
+    {
+        return Some(Intent::AcceptLoad);
     }
     // Derate / offer more: a change word plus a load word or a MW figure.
     let loadish = any(&[
@@ -412,9 +467,52 @@ pub struct Station {
     /// this time (no load-following requests; lower price).
     #[serde(default)]
     pub baseload_until: Option<f64>,
-    /// Base-load block awaiting dispatch's answer: (MWe net, hours).
+    /// Base-load request awaiting dispatch's answer.
     #[serde(default)]
-    pub baseload_request: Option<(f64, f64)>,
+    pub bl_ask: Option<BaseloadAsk>,
+    /// The load change request is a counter to an offer.
+    #[serde(default)]
+    change_counter: bool,
+    /// Counteroffer awaiting the control room.
+    #[serde(default)]
+    pub offer: Option<Offer>,
+    /// Calendar time [s since 00:00 1 January], set by the host.
+    #[serde(default)]
+    pub calendar_s: f64,
+}
+
+/// What a grid counteroffer is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfferKind {
+    Change,
+    Baseload,
+}
+
+/// A counteroffer from grid dispatch, waiting for the control room to
+/// accept, counter or decline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Offer {
+    pub kind: OfferKind,
+    /// Output [MWe net].
+    pub mw: f64,
+    /// Base-load duration [h].
+    pub hours: f64,
+    pub expires_at: f64,
+    /// Dispatch's final position (no more meeting in the middle).
+    pub last: bool,
+}
+
+/// Base-load request; either value may be left for dispatch to choose.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BaseloadAsk {
+    pub mw: Option<f64>,
+    pub hours: Option<f64>,
+    pub counter: bool,
+}
+
+fn round25(x: f64) -> f64 {
+    (x / 25.0).floor() * 25.0
 }
 
 /// Price multiplier while on target in a base-load block (no
@@ -462,7 +560,10 @@ impl Station {
             credits: Vec::new(),
             last_price: 45.0,
             baseload_until: None,
-            baseload_request: None,
+            bl_ask: None,
+            change_counter: false,
+            offer: None,
+            calendar_s: 0.0,
         }
     }
 
@@ -646,9 +747,34 @@ impl Station {
         }
         match intent {
             Some(Intent::Baseload { mw, hours }) => {
-                let mwe = mw.unwrap_or(self.demand_mwe);
-                self.request_baseload(mwe, hours, t);
+                self.request_baseload(mw, hours, t);
                 return intent;
+            }
+            Some(Intent::Counter { mw, hours }) => {
+                match self.offer.clone() {
+                    Some(o) if o.kind == OfferKind::Baseload => {
+                        self.request_baseload(mw.or(Some(o.mw)), hours.or(Some(o.hours)), t)
+                    }
+                    Some(_) => self.request_load_change(mw.unwrap_or(self.demand_mwe), t),
+                    None => {
+                        let at = t + 15.0;
+                        self.replies.push(PendingReply {
+                            at,
+                            call: Call::SayAgain,
+                            who: Some("Grid Dispatch".into()),
+                            meant_for: None,
+                        });
+                    }
+                }
+                return intent;
+            }
+            Some(Intent::Decline) => {
+                self.decline_offer(t);
+                return intent;
+            }
+            Some(Intent::AcceptLoad) if self.offer.is_some() => {
+                self.accept_offer(t);
+                return None;
             }
             Some(Intent::LoadChange {
                 raise,
@@ -718,19 +844,38 @@ impl Station {
 
     /// Ask grid dispatch to change the committed output to `target` MWe
     /// net (derate, or offer more). The answer comes after a short delay.
+    /// System load now and the reason text dispatch uses.
+    pub fn system_load(&self) -> f64 {
+        grid_model::system_load(self.calendar_s)
+    }
+
+    fn grid_why(&self) -> String {
+        let l = self.system_load();
+        format!(
+            "system at {:.0} % of peak ({}, {} {})",
+            l * 100.0,
+            grid_model::state(l).to_lowercase(),
+            grid_model::season(self.calendar_s),
+            grid_model::label(self.calendar_s)
+        )
+    }
+
+    /// Ask dispatch to change the committed output to `target` MWe net
+    /// (derate, or offer more). The answer comes after a short delay.
     pub fn request_load_change(&mut self, target: f64, t: f64) {
         self.change_target = Some(target.max(0.0));
+        self.change_counter = matches!(&self.offer, Some(o) if o.kind == OfferKind::Change);
         let verb = if target < self.demand_mwe {
             "reduce"
         } else {
             "raise"
         };
-        self.say(
-            t,
-            "Control Room",
-            format!("To Grid Dispatch: Requesting to {verb} the unit's committed output to {target:.0} MWe net."),
-            false,
-        );
+        let text = if self.change_counter {
+            format!("To Grid Dispatch: How about {target:.0} MWe net?")
+        } else {
+            format!("To Grid Dispatch: Requesting to {verb} the unit's committed output to {target:.0} MWe net.")
+        };
+        self.say(t, "Control Room", text, false);
         let at = t + 60.0 + 90.0 * self.rand();
         self.replies.push(PendingReply {
             at,
@@ -740,13 +885,30 @@ impl Station {
         });
     }
 
-    /// Ask dispatch to base-load the unit at `mwe` net for `hours`.
-    pub fn request_baseload(&mut self, mwe: f64, hours: f64, t: f64) {
-        self.baseload_request = Some((mwe.max(0.0), hours.clamp(1.0, 24.0 * 30.0)));
+    /// Ask dispatch for a base-load block. Either the output or the
+    /// duration may be left for dispatch to choose.
+    pub fn request_baseload(&mut self, mw: Option<f64>, hours: Option<f64>, t: f64) {
+        let counter = matches!(&self.offer, Some(o) if o.kind == OfferKind::Baseload);
+        let mw = mw.map(|m| m.max(0.0));
+        let hours = hours.map(|h| h.clamp(1.0, 24.0 * 30.0));
+        self.bl_ask = Some(BaseloadAsk { mw, hours, counter });
+        let text = match (mw, hours, counter) {
+            (Some(m), Some(h), true) => format!("How about {m:.0} MWe for {h:.0} hours?"),
+            (Some(m), Some(h), false) => {
+                format!("Requesting a base-load block: hold {m:.0} MWe net for {h:.0} hours.")
+            }
+            (Some(m), None, _) => {
+                format!("Requesting a base-load block at {m:.0} MWe net. How long can you take it?")
+            }
+            (None, Some(h), _) => {
+                format!("Requesting a {h:.0}-hour base-load block. What output can you take?")
+            }
+            (None, None, _) => "Requesting a base-load block. What can you offer?".into(),
+        };
         self.say(
             t,
             "Control Room",
-            format!("To Grid Dispatch: Requesting a base-load block: hold {mwe:.0} MWe net for {hours:.0} hours."),
+            format!("To Grid Dispatch: {text}"),
             false,
         );
         let at = t + 60.0 + 90.0 * self.rand();
@@ -771,9 +933,169 @@ impl Station {
         }
     }
 
+    fn make_offer(
+        &mut self,
+        kind: OfferKind,
+        mw: f64,
+        hours: f64,
+        last: bool,
+        t: f64,
+        text: String,
+    ) {
+        self.offer = Some(Offer {
+            kind,
+            mw,
+            hours,
+            expires_at: t + 900.0,
+            last,
+        });
+        self.say(t, "Grid Dispatch", text, true);
+    }
+
+    /// Accept dispatch's counteroffer.
+    pub fn accept_offer(&mut self, t: f64) -> bool {
+        let Some(o) = self.offer.take() else {
+            return false;
+        };
+        self.say(t, "Control Room", "To Grid Dispatch: Agreed.".into(), false);
+        match o.kind {
+            OfferKind::Change => self.apply_change(o.mw, t),
+            OfferKind::Baseload => self.apply_baseload(o.mw, o.hours, t),
+        }
+        true
+    }
+
+    /// Decline dispatch's counteroffer.
+    pub fn decline_offer(&mut self, t: f64) -> bool {
+        if self.offer.take().is_none() {
+            return false;
+        }
+        self.say(
+            t,
+            "Control Room",
+            "To Grid Dispatch: No thanks, we'll stay as we are.".into(),
+            false,
+        );
+        let cur = self.demand_mwe;
+        self.say(
+            t,
+            "Grid Dispatch",
+            format!("Copy MCR, no change. Hold {cur:.0} MWe."),
+            true,
+        );
+        true
+    }
+
+    fn apply_change(&mut self, target: f64, t: f64) {
+        let cur = self.demand_mwe;
+        let price = self.last_price;
+        let d = target - cur;
+        let mins = d.abs() / RAMP_MW_PER_MIN + 30.0;
+        self.set_commitment(target, t + mins * 60.0, t);
+        if d < 0.0 {
+            let charge = -d * price;
+            self.say(
+                t,
+                "Grid Dispatch",
+                format!("Confirmed: reduce to {target:.0} MWe net within {mins:.0} minutes. Replacement power for the {:.0} MWe shortfall is charged at ${:.0}k.", -d, charge / 1e3),
+                true,
+            );
+            self.fine(
+                charge,
+                format!("replacement power for a {:.0} MWe derate", -d),
+            );
+        } else {
+            let bonus = d * price * 0.5;
+            self.say(
+                t,
+                "Grid Dispatch",
+                format!("Confirmed: raise to {target:.0} MWe net within {mins:.0} minutes. Capacity premium of ${:.0}k on the extra output.", bonus / 1e3),
+                true,
+            );
+            self.credit(bonus, format!("capacity premium for {d:.0} MWe extra"));
+        }
+    }
+
+    fn apply_baseload(&mut self, mw: f64, hours: f64, t: f64) {
+        let d = (mw - self.demand_mwe.max(0.0)).abs();
+        let deadline = t + (d / RAMP_MW_PER_MIN + 30.0) * 60.0;
+        self.pending = None;
+        self.set_commitment(mw, deadline, t);
+        self.baseload_until = Some(t + hours * 3600.0);
+        self.next_request_at = f64::INFINITY;
+        self.say(
+            t,
+            "Grid Dispatch",
+            format!(
+                "Confirmed: base-load block at {mw:.0} MWe net for {hours:.0} hours. No load-following requests until then; paid at {:.0} % of the market price while on target.",
+                BASELOAD_PRICE * 100.0
+            ),
+            true,
+        );
+    }
+
+    /// Dispatch's answer when the control room counters: accept within a
+    /// small margin, otherwise meet in the middle once, then hold firm.
+    fn negotiate(
+        &mut self,
+        kind: OfferKind,
+        want: f64,
+        limit: f64,
+        hours: f64,
+        t: f64,
+        rated: f64,
+    ) -> Option<f64> {
+        let prev = self.offer.clone().filter(|o| o.kind == kind);
+        let up = want > limit; // asking beyond what dispatch can do
+        let margin = 0.04 * rated;
+        let within = if up {
+            want <= limit + margin
+        } else {
+            want >= limit - margin
+        };
+        if within {
+            return Some(want);
+        }
+        match prev {
+            Some(o) if !o.last => {
+                let mid = round25(0.5 * (want + o.mw).max(0.0));
+                let what = if kind == OfferKind::Baseload {
+                    format!("{mid:.0} MWe for {hours:.0} hours")
+                } else {
+                    format!("{mid:.0} MWe net")
+                };
+                self.make_offer(
+                    kind,
+                    mid,
+                    hours,
+                    true,
+                    t,
+                    format!("Let's meet in the middle, MCR: {what}. That's our final offer."),
+                );
+            }
+            Some(o) => {
+                let what = if kind == OfferKind::Baseload {
+                    format!("{:.0} MWe for {:.0} hours", o.mw, o.hours)
+                } else {
+                    format!("{:.0} MWe net", o.mw)
+                };
+                self.make_offer(
+                    kind,
+                    o.mw,
+                    o.hours,
+                    true,
+                    t,
+                    format!("Sorry MCR, {what} is the best we can do."),
+                );
+            }
+            None => return None,
+        }
+        Some(f64::NAN)
+    }
+
     fn answer_baseload(&mut self, plant: &Pwr) {
         let t = plant.time;
-        let Some((want, hours)) = self.baseload_request.take() else {
+        let Some(ask) = self.bl_ask.take() else {
             return;
         };
         if !plant.tg.breaker {
@@ -785,31 +1107,83 @@ impl Station {
             );
             return;
         }
-        let max = rated_net(plant).max(0.0);
-        let target = want.clamp(0.4 * max, max);
-        if self.rand() < 0.8 {
-            let d = (target - self.demand_mwe.max(0.0)).abs();
-            let deadline = t + (d / RAMP_MW_PER_MIN + 30.0) * 60.0;
-            self.pending = None;
-            self.set_commitment(target, deadline, t);
-            self.baseload_until = Some(t + hours * 3600.0);
-            self.next_request_at = f64::INFINITY;
-            self.say(
-                t,
-                "Grid Dispatch",
-                format!(
-                    "Approved: base-load block at {target:.0} MWe net for {hours:.0} hours. No load-following requests until then; paid at {:.0} % of the market price while on target.",
-                    BASELOAD_PRICE * 100.0
-                ),
-                true,
-            );
-        } else {
-            self.say(
-                t,
-                "Grid Dispatch",
-                "Denied, MCR: we need your unit following load right now. Try again later.".into(),
-                true,
-            );
+        let rated = rated_net(plant).max(0.0);
+        let cal = self.calendar_s;
+        let cap =
+            |h: f64| round25(rated * grid_model::baseload_cap(grid_model::load_window(cal, h).0));
+        match (ask.mw, ask.hours) {
+            (Some(mw), Some(h)) => {
+                let mw = mw.min(rated);
+                let c = cap(h);
+                if ask.counter {
+                    match self.negotiate(OfferKind::Baseload, mw, c, h, t, rated) {
+                        Some(v) if v.is_finite() => self.apply_baseload(v, h, t),
+                        Some(_) => {}
+                        None => self.make_offer(
+                            OfferKind::Baseload,
+                            c,
+                            h,
+                            false,
+                            t,
+                            format!("How about {c:.0} MWe for {h:.0} hours?"),
+                        ),
+                    }
+                } else if mw <= c + 0.01 * rated {
+                    self.apply_baseload(mw, h, t);
+                } else {
+                    let why = self.grid_why();
+                    self.make_offer(
+                        OfferKind::Baseload,
+                        c,
+                        h,
+                        false,
+                        t,
+                        format!("We can't take {mw:.0} MWe through every night and weekend for {h:.0} hours: {why}. How about {c:.0} MWe?"),
+                    );
+                }
+            }
+            (Some(mw), None) => {
+                let mw = mw.min(rated);
+                let best = [168.0, 72.0, 24.0, 12.0]
+                    .into_iter()
+                    .find(|h| cap(*h) >= mw - 0.01 * rated);
+                match best {
+                    Some(h) => self.make_offer(
+                        OfferKind::Baseload,
+                        mw,
+                        h,
+                        false,
+                        t,
+                        format!("We can take {mw:.0} MWe base-load for {h:.0} hours. Deal?"),
+                    ),
+                    None => {
+                        let c = cap(12.0);
+                        self.make_offer(OfferKind::Baseload, c, 12.0, false, t, format!("{mw:.0} MWe is more than the system can absorb overnight right now. We could do {c:.0} MWe for 12 hours."));
+                    }
+                }
+            }
+            (None, Some(h)) => {
+                let c = cap(h);
+                self.make_offer(
+                    OfferKind::Baseload,
+                    c,
+                    h,
+                    false,
+                    t,
+                    format!("For {h:.0} hours we can take {c:.0} MWe base-load. Deal?"),
+                );
+            }
+            (None, None) => {
+                let c = cap(24.0);
+                self.make_offer(
+                    OfferKind::Baseload,
+                    c,
+                    24.0,
+                    false,
+                    t,
+                    format!("We can offer {c:.0} MWe base-load for 24 hours. Deal?"),
+                );
+            }
         }
     }
 
@@ -821,77 +1195,74 @@ impl Station {
         self.credits.push((amount, why));
     }
 
-    /// Grid dispatch answers a load change request.
+    /// Grid dispatch answers a load change request, from system demand.
     fn answer_load_change(&mut self, plant: &Pwr) {
         let t = plant.time;
         let Some(want) = self.change_target.take() else {
             return;
         };
-        let online = plant.tg.breaker;
-        if !online || self.demand_mwe <= 0.0 {
+        let counter = std::mem::take(&mut self.change_counter);
+        if !plant.tg.breaker || self.demand_mwe <= 0.0 {
             self.say(t, "Grid Dispatch", "MCR, you have no committed output to change. Call when you are on-line and following an instruction.".into(), true);
             return;
         }
-        let max = rated_net(plant).max(0.0);
+        let rated = rated_net(plant).max(0.0);
         let cur = self.demand_mwe;
-        let price = self.last_price;
-        let mins = |d: f64| d.abs() / RAMP_MW_PER_MIN + 30.0;
-        if want < cur - 1.0 {
-            let target = want.max(0.2 * max);
-            if self.rand() < 0.85 {
-                let d = cur - target;
-                let charge = d * price;
-                self.set_commitment(target, t + mins(d) * 60.0, t);
-                self.say(
-                    t,
-                    "Grid Dispatch",
-                    format!("Approved: reduce to {target:.0} MWe net within {:.0} minutes. Replacement power for the {d:.0} MWe shortfall is charged at ${:.0}k.", mins(d), charge / 1e3),
-                    true,
-                );
-                self.fine(charge, format!("replacement power for a {d:.0} MWe derate"));
-            } else {
-                self.say(
-                    t,
-                    "Grid Dispatch",
-                    format!("Denied, MCR: the system is short right now. Hold {cur:.0} MWe."),
-                    true,
-                );
-            }
-        } else if want > cur + 1.0 {
-            if cur >= max - 1.0 {
-                self.say(
-                    t,
-                    "Grid Dispatch",
-                    format!("MCR, your unit is rated {max:.0} MWe net: you are already there."),
-                    true,
-                );
-                return;
-            }
-            let target = want.min(max);
-            if self.rand() < 0.6 {
-                let d = target - cur;
-                let bonus = d * price * 0.5;
-                self.set_commitment(target, t + mins(d) * 60.0, t);
-                self.say(
-                    t,
-                    "Grid Dispatch",
-                    format!("Thanks MCR, we'll take it: raise to {target:.0} MWe net within {:.0} minutes. Capacity premium of ${:.0}k on the extra output.", mins(d), bonus / 1e3),
-                    true,
-                );
-                self.credit(bonus, format!("capacity premium for {d:.0} MWe extra"));
-            } else {
-                self.say(
-                    t,
-                    "Grid Dispatch",
-                    format!("No thanks MCR, the system is long. Hold {cur:.0} MWe."),
-                    true,
-                );
-            }
-        } else {
+        let (_, avg6, peak6) = grid_model::load_window(self.calendar_s, 6.0);
+        let floor = (round25(rated * grid_model::derate_floor(peak6)) + 25.0).min(rated);
+        let ceiling = round25(rated * grid_model::raise_ceiling(avg6));
+        let why = self.grid_why();
+        if (want - cur).abs() < 1.0 {
             self.say(
                 t,
                 "Grid Dispatch",
                 format!("Copy, no change: hold {cur:.0} MWe."),
+                true,
+            );
+            return;
+        }
+        let lowering = want < cur;
+        let limit = if lowering { floor } else { ceiling.min(rated) };
+        if counter {
+            match self.negotiate(OfferKind::Change, want, limit, 0.0, t, rated) {
+                Some(v) if v.is_finite() => self.apply_change(v.min(rated), t),
+                Some(_) => {}
+                None => {}
+            }
+            return;
+        }
+        let ok = if lowering {
+            want >= floor
+        } else {
+            want <= ceiling
+        };
+        if ok {
+            self.apply_change(want.min(rated), t);
+        } else if lowering && floor < cur - 10.0 {
+            self.make_offer(OfferKind::Change, floor, 0.0, false, t, format!("Can't take you down to {want:.0} MWe, MCR: {why}. We can let you come down to {floor:.0} MWe. Accept?"));
+        } else if !lowering && ceiling > cur + 10.0 {
+            self.make_offer(
+                OfferKind::Change,
+                ceiling,
+                0.0,
+                false,
+                t,
+                format!(
+                    "We don't need {want:.0} MWe, MCR: {why}. We'd take {ceiling:.0} MWe. Accept?"
+                ),
+            );
+        } else if lowering {
+            self.say(
+                t,
+                "Grid Dispatch",
+                format!("Sorry MCR, the grid needs you at {cur:.0} MWe: {why}."),
+                true,
+            );
+        } else {
+            self.say(
+                t,
+                "Grid Dispatch",
+                format!("No thanks MCR, the system is long: {why}. Hold {cur:.0} MWe."),
                 true,
             );
         }
@@ -1095,6 +1466,15 @@ impl Station {
         self.was_online = online;
         self.was_tripped = plant.reactor_tripped;
 
+        if self.offer.as_ref().is_some_and(|o| t > o.expires_at) {
+            self.offer = None;
+            self.say(
+                t,
+                "Grid Dispatch",
+                "Offer withdrawn, MCR: no answer.".into(),
+                true,
+            );
+        }
         if let Some(until) = self.baseload_until {
             if t >= until {
                 self.baseload_until = None;
@@ -1119,14 +1499,20 @@ impl Station {
                     .max(300.0)
                     .min(rated_net(plant))
             } else {
-                let mut tgt;
-                loop {
-                    tgt = (0.4 + 0.6 * self.rand()) * rated_net(plant);
-                    if (tgt - self.demand_mwe).abs() > 0.07 * rated_net(plant) {
-                        break;
-                    }
+                // Follow the system: more from the unit as demand rises over
+                // the next couple of hours, less as it falls.
+                let rated = rated_net(plant);
+                let (_, avg2, _) = grid_model::load_window(self.calendar_s + 3600.0, 2.0);
+                let mut tgt =
+                    rated * (grid_model::dispatch_fraction(avg2) + 0.08 * (self.rand() - 0.5));
+                if (tgt - self.demand_mwe).abs() < 0.07 * rated {
+                    tgt = if tgt >= self.demand_mwe {
+                        self.demand_mwe + 0.08 * rated
+                    } else {
+                        self.demand_mwe - 0.08 * rated
+                    };
                 }
-                tgt
+                round25(tgt.clamp(0.4 * rated, rated))
             };
             let why = if self.demand_mwe <= 0.0 {
                 "Welcome on-line."
@@ -1537,56 +1923,16 @@ mod dispatch_tests {
             p("request baseload 1000 MW for 3 days"),
             Some(Intent::Baseload {
                 mw: Some(1000.0),
-                hours: 72.0
+                hours: Some(72.0)
             })
         );
         assert_eq!(
             p("can we hold 900 mw for 12 hours"),
             Some(Intent::Baseload {
                 mw: Some(900.0),
-                hours: 12.0
+                hours: Some(12.0)
             })
         );
-    }
-
-    #[test]
-    fn dispatch_answers_derate_and_offer() {
-        let mut plant = Pwr::full_power();
-        let mut st = Station::new();
-        st.tick(&mut plant, 0.1);
-        st.issue(plant.time, 900.0, "Test.");
-        st.accept(plant.time);
-        // Derate: approved most of the time, with a replacement power charge.
-        let mut approved = 0;
-        for _ in 0..10 {
-            st.demand_mwe = 900.0;
-            st.fines.clear();
-            st.request_load_change(800.0, plant.time);
-            plant.time += 200.0;
-            st.tick(&mut plant, 200.0);
-            if st.demand_mwe == 800.0 {
-                approved += 1;
-                assert!((st.fines.last().unwrap().0 - 100.0 * 45.0).abs() < 1.0);
-            } else {
-                assert!(st.fines.is_empty());
-            }
-        }
-        assert!(approved >= 5, "derates approved {approved}/10");
-        // Offer more: capped at the unit's rating, premium paid when taken.
-        let mut taken = 0;
-        for _ in 0..10 {
-            st.demand_mwe = 800.0;
-            st.credits.clear();
-            st.request_load_change(5000.0, plant.time);
-            plant.time += 200.0;
-            st.tick(&mut plant, 200.0);
-            if st.demand_mwe > 800.0 {
-                taken += 1;
-                assert!(st.demand_mwe <= rated_net(&plant) + 1e-6);
-                assert!(!st.credits.is_empty());
-            }
-        }
-        assert!(taken >= 2, "offers taken {taken}/10");
     }
 
     #[test]
@@ -1610,37 +1956,93 @@ mod dispatch_tests {
         assert!(st.boron_sample.is_some());
     }
 
-    #[test]
-    fn baseload_block_holds_output_without_requests() {
+    const DAY_S: f64 = 86_400.0;
+    const HOUR_S: f64 = 3600.0;
+
+    /// A full-power unit following a 900 MWe instruction at calendar time `cal`.
+    fn on_line_at(cal: f64) -> (Pwr, Station) {
         let mut plant = Pwr::full_power();
         let mut st = Station::new();
+        st.calendar_s = cal;
         st.tick(&mut plant, 0.1);
-        let net = plant.gross_mwe - plant.house_load();
-        st.issue(plant.time, net, "Test.");
+        st.issue(plant.time, 900.0, "Test.");
         st.accept(plant.time);
-        let mut got = false;
-        for _ in 0..10 {
-            st.request_baseload(net, 24.0, plant.time);
-            plant.time += 200.0;
-            st.tick(&mut plant, 200.0);
-            if st.baseload_until.is_some() {
-                got = true;
-                break;
-            }
-        }
-        assert!(got, "dispatch approves a base-load block most of the time");
-        st.reached = true;
-        assert!((st.revenue_multiplier(&plant) - BASELOAD_PRICE).abs() < 1e-9);
-        // No new requests during the block, even well past the usual interval.
-        plant.time += 20.0 * 3600.0;
-        st.tick(&mut plant, 20.0 * 3600.0);
+        st.next_request_at = f64::INFINITY; // no routine requests in the way
+        (plant, st)
+    }
+
+    fn answer(plant: &mut Pwr, st: &mut Station) {
+        plant.time += 200.0;
+        st.tick(plant, 200.0);
+    }
+
+    #[test]
+    fn derates_follow_system_demand() {
+        // Winter weekday evening peak: no way down.
+        let (mut plant, mut st) = on_line_at(DAY_S + 17.0 * HOUR_S);
+        st.request_load_change(650.0, plant.time);
+        answer(&mut plant, &mut st);
+        assert_eq!(st.demand_mwe, 900.0, "derate refused at peak");
+        let last = &st.messages.last().unwrap().text;
+        assert!(last.contains("needs you") || st.offer.is_some(), "{last}");
+        // Spring Sunday night: surplus, the derate goes through.
+        let (mut plant, mut st) = on_line_at(97.0 * DAY_S + 1.0 * HOUR_S);
+        st.request_load_change(650.0, plant.time);
+        answer(&mut plant, &mut st);
+        assert_eq!(st.demand_mwe, 650.0);
+        assert!(!st.fines.is_empty(), "replacement power charged");
+    }
+
+    #[test]
+    fn extra_output_is_welcome_at_peak_not_at_night() {
+        let (mut plant, mut st) = on_line_at(DAY_S + 17.0 * HOUR_S);
+        st.request_load_change(1050.0, plant.time);
+        answer(&mut plant, &mut st);
+        assert!(st.demand_mwe > 900.0 || st.offer.is_some());
+        let (mut plant, mut st) = on_line_at(97.0 * DAY_S + 1.0 * HOUR_S);
+        st.request_load_change(1050.0, plant.time);
+        answer(&mut plant, &mut st);
+        assert_eq!(st.demand_mwe, 900.0, "system is long at night");
+    }
+
+    #[test]
+    fn baseload_negotiation_counter_accept_and_hold() {
+        // Spring, a week at 1000 MWe: too much for the weekend nights.
+        let (mut plant, mut st) = on_line_at(91.0 * DAY_S + 9.0 * HOUR_S);
+        st.request_baseload(Some(1000.0), Some(168.0), plant.time);
+        answer(&mut plant, &mut st);
+        let offer = st.offer.clone().expect("dispatch counters");
+        assert_eq!(offer.kind, OfferKind::Baseload);
+        assert!(offer.mw < 1000.0 && offer.mw >= 0.6 * rated_net(&plant) - 25.0);
+        // Counter a little above their offer: they meet in the middle.
+        st.request_baseload(Some(offer.mw + 150.0), Some(168.0), plant.time);
+        answer(&mut plant, &mut st);
+        let mid = st.offer.clone().expect("meet in the middle");
+        assert!(mid.last && mid.mw > offer.mw && mid.mw < offer.mw + 150.0);
+        assert!(st.accept_offer(plant.time));
+        assert!(st.baseload_until.is_some());
+        assert_eq!(st.demand_mwe, mid.mw);
+        // No load-following requests during the block.
+        plant.time += 100.0 * HOUR_S;
+        st.tick(&mut plant, 100.0 * HOUR_S);
         assert!(st.pending.is_none());
-        // After it ends, dispatch resumes.
-        plant.time += 5.0 * 3600.0;
-        st.tick(&mut plant, 5.0 * 3600.0);
-        assert!(st.baseload_until.is_none());
-        plant.time += 120.0;
-        st.tick(&mut plant, 120.0);
-        assert!(st.pending.is_some());
+    }
+
+    #[test]
+    fn grid_fills_in_the_missing_value() {
+        let (mut plant, mut st) = on_line_at(DAY_S + 9.0 * HOUR_S);
+        st.request_baseload(None, Some(72.0), plant.time);
+        answer(&mut plant, &mut st);
+        let o = st.offer.clone().unwrap();
+        assert_eq!(o.hours, 72.0);
+        assert!(o.mw > 0.0);
+        st.decline_offer(plant.time);
+        st.request_baseload(Some(o.mw), None, plant.time);
+        answer(&mut plant, &mut st);
+        let o2 = st.offer.clone().unwrap();
+        assert!(
+            o2.hours >= 72.0,
+            "at that output they can take it at least as long"
+        );
     }
 }

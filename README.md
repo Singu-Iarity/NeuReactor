@@ -236,6 +236,14 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
   hottest, per-quadrant and per-rod-bank-area averages plus calculated fuel
   average; the Core Exit Thermocouple Map upgrade shows every assembly on
   the core map
+- System demand: network load follows the time of day, day of week and
+  season (career date; sandbox starts Mon 15 Jan 06:00). Dispatch
+  instructions follow it, derates are refused or countered when the grid
+  is tight, extra output is taken only when needed, and base-load blocks
+  are sized to the lowest demand in the period. Grid offers can be
+  accepted, declined, or countered (they meet you in the middle once, then
+  hold firm); leave the output or the duration blank and dispatch proposes
+  it. Grid tab shows system load, state and a 24-hour forecast
 - Grid negotiation: ask dispatch to lower your commitment (derate: usually
   approved, replacement power charged) or offer more output (taken when the
   system needs it, capacity premium paid), from the Grid tab or by message

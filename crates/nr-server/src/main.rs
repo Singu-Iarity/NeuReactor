@@ -189,6 +189,12 @@ fn sim_loop(world: Arc<Mutex<World>>) {
             ..
         } = &mut *w;
         let elapsed = plant.time - t0;
+        // Calendar for system demand: the career date, or Mon 15 Jan 06:00
+        // plus game time in sandbox.
+        station.calendar_s = match career.as_ref() {
+            Some(c) => c.elapsed_days * 86_400.0,
+            None => 14.0 * 86_400.0 + 6.0 * 3600.0 + plant.time,
+        };
         if elapsed > 0.0 {
             let events = station.tick(plant, elapsed);
             for e in events {

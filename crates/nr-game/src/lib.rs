@@ -9,6 +9,7 @@
 //! phase** runs a calendar: power sold earns money, O&M costs money, new
 //! technology appears as the years pass, and research can unlock it early.
 
+pub mod grid_model;
 pub mod station;
 pub use station::{Call, Station};
 

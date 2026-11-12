@@ -376,6 +376,12 @@ fn api_authed(
                 "unacked": st.unacked(),
                 "reached": st.reached,
                 "baseload_until": st.baseload_until,
+                "offer": st.offer,
+                "system_load": st.system_load(),
+                "grid_state": nr_game::grid_model::state(st.system_load()),
+                "calendar": nr_game::grid_model::label(st.calendar_s),
+                "season": nr_game::grid_model::season(st.calendar_s),
+                "forecast": (0..24).map(|h| nr_game::grid_model::system_load(st.calendar_s + h as f64 * 3600.0)).collect::<Vec<_>>(),
                 "totals": st.totals,
                 "totals_profit": st.totals.profit(),
                 "instruction": st.instruction,
@@ -584,9 +590,25 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
             if !w.plant.tg.breaker {
                 return Err("the unit must be on-line to request a base-load block".into());
             }
-            let mwe = b.target_mwe.unwrap_or(w.station.demand_mwe);
-            w.station.request_baseload(mwe, b.hours.unwrap_or(24.0), t);
+            w.station.request_baseload(b.target_mwe, b.hours, t);
             Ok(())
+        }
+        "offer" => {
+            #[derive(Deserialize)]
+            struct OfferReq {
+                accept: bool,
+            }
+            let o: OfferReq = serde_json::from_str(body).map_err(parse)?;
+            let done = if o.accept {
+                w.station.accept_offer(t)
+            } else {
+                w.station.decline_offer(t)
+            };
+            if done {
+                Ok(())
+            } else {
+                Err("no offer from grid dispatch to answer".into())
+            }
         }
         "load_change" => {
             #[derive(Deserialize)]
