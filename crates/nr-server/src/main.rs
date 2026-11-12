@@ -9,6 +9,7 @@
 //! ```
 
 mod api;
+mod saves;
 mod world;
 
 use std::sync::{Arc, Mutex};
@@ -64,10 +65,66 @@ fn main() {
     }
 }
 
+/// Auto time warp: speed up while the unit is steady on its dispatch target
+/// with nothing needing attention; slow back down the moment a new grid
+/// request arrives, output leaves the target band, or an alarm comes in.
+fn auto_warp(w: &mut World) {
+    if !w.auto_warp {
+        if w.warping {
+            w.warping = false;
+            w.time_scale = w.warp_return;
+        }
+        w.warp_reason.clear();
+        return;
+    }
+    let plant = &w.plant;
+    let st = &w.station;
+    let rated_net = plant.p.gross_mwe - plant.p.house_load_mwe;
+    let net = plant.gross_mwe - plant.house_load();
+    let hold = if st.pending.is_some() {
+        Some("new grid request".to_string())
+    } else if !plant.tg.breaker {
+        Some("unit off-line".into())
+    } else if st.demand_mwe <= 0.0 {
+        Some("no dispatch commitment".into())
+    } else if !st.reached || (net - st.demand_mwe).abs() > 0.03 * rated_net {
+        Some("output not on demand".into())
+    } else if plant.reactor_tripped {
+        Some("reactor tripped".into())
+    } else {
+        plant.serious_alarm().map(|a| format!("alarm: {a}"))
+    };
+    match hold {
+        None => {
+            if !w.warping {
+                w.warp_return = w.time_scale.min(w.warp_factor);
+                w.warping = true;
+                w.log(nr_reactors::PlantEvent::info(&format!(
+                    "Auto time warp: {}x",
+                    w.warp_factor
+                )));
+            }
+            w.time_scale = w.warp_factor;
+            w.warp_reason.clear();
+        }
+        Some(reason) => {
+            if w.warping {
+                w.warping = false;
+                w.time_scale = w.warp_return;
+                w.log(nr_reactors::PlantEvent::warn(&format!(
+                    "Auto time warp ended: {reason}"
+                )));
+            }
+            w.warp_reason = reason;
+        }
+    }
+}
+
 fn sim_loop(world: Arc<Mutex<World>>) {
     let tick = Duration::from_millis(20);
     let mut last = Instant::now();
     let mut debt = 0.0;
+    let mut last_autosave = Instant::now();
     loop {
         thread::sleep(tick);
         let now = Instant::now();
@@ -153,6 +210,14 @@ fn sim_loop(world: Arc<Mutex<World>>) {
         }
         if steps == 20_000 {
             debt = 0.0;
+        }
+        auto_warp(&mut w);
+        // Autosave every five minutes of real time.
+        if last_autosave.elapsed() > Duration::from_secs(300) {
+            last_autosave = Instant::now();
+            if let Err(e) = saves::save(&w, saves::AUTOSAVE) {
+                eprintln!("autosave failed: {e}");
+            }
         }
         w.collect_events();
     }

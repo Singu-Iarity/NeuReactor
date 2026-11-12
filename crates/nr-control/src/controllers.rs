@@ -4,7 +4,7 @@ use nr_core::{clamp, lerp, Pi};
 
 /// Automatic rod control: Tavg/Tref error plus power-mismatch, with a
 /// deadband and a variable-speed program (8–72 steps/min).
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct RodControl {
     pub deadband: f64,
     pub lockup: f64,
@@ -96,7 +96,7 @@ pub fn overlap_sequence(
 }
 
 /// Pressurizer pressure: proportional/backup heaters and spray.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PressureControl {
     pi: Pi,
 }
@@ -126,7 +126,7 @@ impl PressureControl {
 }
 
 /// Pressurizer level via charging flow.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct LevelControl {
     pi: Pi,
 }
@@ -150,7 +150,7 @@ impl LevelControl {
 }
 
 /// Three-element feedwater control: feed demand = steam flow + level PI.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct FeedwaterControl {
     pi: Pi,
 }
@@ -176,7 +176,7 @@ impl FeedwaterControl {
 
 /// Steam dump: load-rejection mode while at power, plant-trip mode (hold
 /// no-load Tavg) after a reactor trip.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SteamDumpControl {
     pi: Pi,
 }
@@ -206,7 +206,7 @@ impl SteamDumpControl {
 /// controller (ramping a speed reference at the selected acceleration);
 /// with the breaker closed it ramps a load reference and trims the governor
 /// valves on electrical output.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TurbineGovernor {
     pub load_ref: f64,
     pub speed_ref: f64,
@@ -252,7 +252,7 @@ impl TurbineGovernor {
 }
 
 /// Automatic voltage regulator: trims excitation to hold terminal voltage.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Avr {
     pi: Pi,
 }
@@ -276,7 +276,7 @@ impl Avr {
 }
 
 /// What the auto-synchronizer wants this step.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct SyncAction {
     /// Governor speed setpoint [rpm] (generator slightly fast).
     pub speed_rpm: f64,
@@ -288,7 +288,7 @@ pub struct SyncAction {
 
 /// Auto-synchronizer: runs the generator slightly fast of grid frequency,
 /// matches voltage and closes the breaker just before the phase crosses zero.
-#[derive(Debug, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct AutoSynchronizer;
 
 impl AutoSynchronizer {
@@ -317,7 +317,7 @@ impl AutoSynchronizer {
 }
 
 /// Boron/makeup automation keeps the lead control bank inside a band.
-#[derive(Debug, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct BoronControl {
     state: i8,
 }
@@ -342,7 +342,7 @@ impl BoronControl {
 
 /// Plant master: follows a dispatch target and runs back load on large
 /// deviations of plant parameters.
-#[derive(Debug, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct PlantMaster;
 
 impl PlantMaster {

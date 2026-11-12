@@ -55,6 +55,7 @@ pub struct PointKinetics {
     /// External neutron source (startup source / spontaneous fission), in n/s units.
     pub source: f64,
     /// Smoothed reactor period [s]; `f64::INFINITY` when steady.
+    #[serde(with = "nr_core::serde_f64")]
     pub period: f64,
 }
 

@@ -6,5 +6,9 @@ edition.workspace = true
 
 [dependencies]
 nr-api.workspace = true
+nr-core.workspace = true
 nr-reactors.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -152,9 +152,22 @@ $("#pb-demand-box").onclick = () => select("grid");
 document.querySelectorAll("#timectl button").forEach(b => b.onclick = async () => {
   const s = b.dataset.scale;
   if (s === "pause") return send({ type: "set_paused", paused: !telemetry?.paused });
+  // Choosing a speed by hand takes over from auto warp.
+  if (telemetry?.auto_warp) {
+    await api("/time/auto_warp", { on: false });
+    toast("Auto warp off");
+  }
   await send({ type: "set_paused", paused: false });
   send({ type: "set_time_scale", factor: +s });
 });
+
+// Auto time warp.
+$("#warp").onclick = async () => {
+  sound.play("button");
+  await api("/time/auto_warp", { on: !telemetry?.auto_warp, factor: +$("#warp-factor").value });
+};
+$("#warp-factor").onchange = () => api("/time/auto_warp", { on: !!telemetry?.auto_warp, factor: +$("#warp-factor").value });
+let lastWarping = false;
 
 function fmtTime(s) {
   s = Math.floor(s);
@@ -209,6 +222,13 @@ function render() {
     const s = b.dataset.scale;
     b.classList.toggle("on", s === "pause" ? t.paused : !t.paused && +s === t.time_scale);
   });
+  $("#warp").classList.toggle("on", !!t.auto_warp);
+  $("#warp").classList.toggle("active", !!t.warping);
+  if (document.activeElement !== $("#warp-factor") && t.warp_factor) $("#warp-factor").value = String(t.warp_factor);
+  $("#warp-state").textContent = !t.auto_warp ? "" : t.warping ? `WARPING ${t.warp_factor}×` : `HOLD: ${t.warp_reason || "…"}`;
+  $("#warp-state").className = `warp-state ${t.warping ? "go" : t.auto_warp ? "hold" : ""}`;
+  if (lastWarping && !t.warping && t.auto_warp) toast(`Auto warp slowed down: ${t.warp_reason}`);
+  lastWarping = !!t.warping;
   const R = t.readings;
   $("#pb-gross").textContent = `${R.gross_mwe.toFixed(0)} MWe`;
   $("#pb-net").textContent = `${R.net_mwe.toFixed(0)} MWe`;

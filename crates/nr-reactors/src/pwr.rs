@@ -32,7 +32,7 @@ use nr_physics::{
 use std::collections::BTreeMap;
 
 /// Design parameters.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PwrParams {
     pub thermal_power: f64,
     pub gross_mwe: f64,
@@ -290,7 +290,7 @@ fn parse_group(sel: &str) -> Option<(&str, u8)> {
 }
 
 /// Nuclear instrumentation trip blocks.
-#[derive(Debug, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct NisState {
     pub sr_blocked: bool,
     pub ir_blocked: bool,
@@ -298,7 +298,7 @@ pub struct NisState {
 }
 
 /// Complete PWR plant state.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Pwr {
     pub p: PwrParams,
     pub name: String,
@@ -391,8 +391,11 @@ pub struct Pwr {
     ctl_bias: BTreeMap<ModuleId, f64>,
 
     // Instruments
+    #[serde(skip)]
     pub sensors: BTreeMap<&'static str, Sensor>,
+    #[serde(skip)]
     pub(crate) readings: BTreeMap<&'static str, f64>,
+    #[serde(skip)]
     pub events: Vec<PlantEvent>,
 
     // Derived quantities cached each step (truth).
@@ -406,7 +409,7 @@ pub struct Pwr {
 }
 
 /// Breakdown of core reactivity (Δk/k).
-#[derive(Debug, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct Reactivity {
     pub rods: f64,
     pub boron: f64,
@@ -1557,6 +1560,23 @@ impl Pwr {
         m.insert("da_pressure_mpa", self.deaerator.pressure_mpa);
         m.insert("da_temp_c", self.deaerator.temperature());
         m
+    }
+
+    /// Rebuild state that is not saved (instruments, readings) after
+    /// loading a saved plant.
+    pub fn restored(mut self) -> Self {
+        self.init_sensors();
+        self.apply_size();
+        self
+    }
+
+    /// Any trip or alarm (not status lights or warnings) standing now?
+    /// Returns the first one's text.
+    pub fn serious_alarm(&self) -> Option<String> {
+        self.alarms()
+            .into_iter()
+            .find(|a| matches!(a.severity, Severity::Alarm | Severity::Trip))
+            .map(|a| a.text)
     }
 
     fn init_sensors(&mut self) {

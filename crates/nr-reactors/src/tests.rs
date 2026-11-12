@@ -626,3 +626,32 @@ fn bus_transfer_module_restores_offsite_and_moves_to_uat() {
         f.elec.sut_load_mw
     );
 }
+
+#[test]
+fn steady_full_power_has_no_serious_alarm() {
+    let mut p = Pwr::full_power();
+    p.advance(120.0);
+    assert_eq!(p.serious_alarm(), None);
+}
+
+#[test]
+fn plant_survives_a_save_round_trip() {
+    let mut a = Pwr::hot_standby();
+    op(&mut a, Command::SetOffsitePower { available: false });
+    a.advance(30.0);
+    let json = serde_json::to_string(&a).unwrap();
+    let mut b: Pwr = serde_json::from_str::<Pwr>(&json).unwrap().restored();
+    assert_eq!(b.time, a.time);
+    assert_eq!(b.elec.grid_available, a.elec.grid_available);
+    assert_eq!(b.rcp_running, a.rcp_running);
+    a.advance(120.0);
+    b.advance(120.0);
+    assert!(
+        (a.tavg() - b.tavg()).abs() < 0.5,
+        "{} vs {}",
+        a.tavg(),
+        b.tavg()
+    );
+    assert!((a.pressure - b.pressure).abs() < 0.05e6);
+    assert_eq!(a.reactor_tripped, b.reactor_tripped);
+}

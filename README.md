@@ -29,6 +29,18 @@ cargo run --release -p nr-cli -- bench
 
 Scenarios: `steady`, `scram`, `load-follow`, `rcp-trip`, `xenon`.
 
+## Time warp and saving
+
+- **AUTO WARP** (top bar, pick 100× to 5000×): runs fast while the unit is
+  on-line and steady on its grid commitment, and drops back to your normal
+  speed the moment the grid sends a new request, output leaves the ±3 %
+  band, the unit trips or a serious alarm comes in. The top bar shows why
+  it is holding. Choosing a speed by hand turns auto warp off.
+- **Save / load** (Plant Computer tab): saves the whole plant, career and
+  grid state as JSON in `./saves` (or `$NR_SAVE_DIR`). The game also
+  autosaves every five minutes to `autosave`. Strip-chart history and
+  injected instrument faults are not saved.
+
 ## Automatic plant control
 
 - **Reactor Power Controller** (Reactor tab), with rod control in AUTO:

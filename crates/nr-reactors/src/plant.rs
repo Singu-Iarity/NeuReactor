@@ -4,7 +4,7 @@
 use nr_api::{modules, GameMode, ModuleId, ModuleMode, Severity, UpgradeId};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AutomationState {
     pub game_mode: GameMode,
     /// Installed automation modules.
@@ -92,7 +92,7 @@ impl Default for AutomationState {
 }
 
 /// A logged plant event (for the UI event log and plugins).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlantEvent {
     pub severity: Severity,
     pub text: String,

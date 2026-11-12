@@ -1,6 +1,6 @@
 import { mweScale } from "../rating.js";
 import { h, plate, recorder, pushbutton } from "../widgets.js";
-import { api } from "../api.js";
+import { api, toast } from "../api.js";
 import * as sound from "../sound.js";
 import { settings } from "../settings.js";
 
@@ -31,6 +31,42 @@ export function build(root, ctx) {
     ]),
   ];
   const events = h("ol", { class: "events", reversed: true });
+
+  // ---- save / load
+  const saveName = h("input", { class: "save-name", type: "text", maxlength: 40, placeholder: "save name", value: "my plant" });
+  saveName.addEventListener("keydown", e => { e.stopPropagation(); if (e.key === "Enter") doSave(); });
+  const saveList = h("tbody");
+  const when = sec => new Date(sec * 1000).toLocaleString();
+  const simT = s => `${Math.floor(s / 86400)}d ${Math.floor(s / 3600) % 24}h`;
+  async function refreshSaves() {
+    let list = [];
+    try { list = await api("/saves"); } catch (_) { return; }
+    saveList.replaceChildren(...(list.length ? list.map(sv => h("tr", {},
+      h("td", {}, h("b", {}, sv.name)),
+      h("td", {}, when(sv.saved_at)),
+      h("td", {}, `${sv.mode}${sv.career_date ? ` · ${sv.career_date}` : ""} · ${sv.unit} · sim ${simT(sv.sim_time)}`),
+      h("td", {},
+        h("button", { class: "btn", onclick: async () => {
+          if (!confirm(`Load "${sv.name}"? Unsaved progress is lost.`)) return;
+          const r = await api("/saves/load", { name: sv.name });
+          if (r.ok) location.reload(); else toast(r.error);
+        } }, "LOAD"),
+        " ",
+        h("button", { class: "btn", onclick: async () => {
+          if (!confirm(`Delete save "${sv.name}"?`)) return;
+          const r = await api("/saves/delete", { name: sv.name });
+          if (!r.ok) toast(r.error);
+          refreshSaves();
+        } }, "DELETE")))) : [h("tr", {}, h("td", { colspan: 4 }, "No saves yet."))]));
+  }
+  async function doSave() {
+    const name = saveName.value.trim();
+    const r = await api("/saves/save", { name });
+    if (r.ok) { toast(`Saved "${name}"`); sound.play("button"); } else { toast(r.error); sound.play("deny"); }
+    refreshSaves();
+  }
+  refreshSaves();
+  setInterval(refreshSaves, 30_000);
   const plugins = h("div", { class: "plugins" });
   const sc = (name, label) => pushbutton(label, { onPress: () => { if (confirm(`Load scenario "${label}"? The current plant state is discarded.`)) ctx.send({ type: "load_scenario", name }); } });
   const hs = sc("hot_standby", "HOT STANDBY"), fp = sc("full_power", "FULL POWER");
@@ -47,6 +83,10 @@ export function build(root, ctx) {
   root.append(h("div", { class: "board" },
     h("section", { class: "sect wide", "data-section": "computer.recorders" }, plate("RECORDERS"), h("div", { class: "row" }, ...recs.map(r => r.el))),
     h("section", { class: "sect", "data-section": "computer.log" }, plate("EVENT LOG"), events),
+    h("section", { class: "sect wide", "data-section": "computer.log" }, plate("SAVE / LOAD GAME"),
+      h("div", { class: "row tight" }, saveName, h("button", { class: "btn", onclick: doSave }, "SAVE"), h("button", { class: "btn", onclick: refreshSaves }, "REFRESH")),
+      h("p", { class: "note" }, "Saves the whole plant, career and grid state to the saves folder next to where the game runs. The game also autosaves every five minutes to \"autosave\"."),
+      h("table", { class: "bill-table save-table" }, saveList)),
     h("section", { class: "sect", "data-section": "computer.instructor" }, plate("SANDBOX / INSTRUCTOR STATION"),
       h("div", { class: "row tight" }, hs.el, fp.el, analog.el, digital.el, training.el, repair.el),
       plate("DISPLAY", "small"), h("div", { class: "row tight" }, lampBtn.el, shakeBtn.el),

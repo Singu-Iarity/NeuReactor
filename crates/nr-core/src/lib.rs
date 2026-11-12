@@ -5,6 +5,7 @@
 //! and saturated water/steam properties.
 
 pub mod math;
+pub mod serde_f64;
 pub mod steam;
 
 pub use math::{clamp, lerp, Pi, RateLimiter, Rng, Table1D};

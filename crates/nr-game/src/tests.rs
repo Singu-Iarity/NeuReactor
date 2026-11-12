@@ -319,3 +319,23 @@ fn bigger_core_in_an_outage_rebuilds_the_unit_and_needs_rescaling() {
             .available
     );
 }
+
+#[test]
+fn critical_plant_and_station_round_trip_through_json() {
+    let mut plant = Pwr::full_power();
+    plant.advance(5.0);
+    let st = crate::Station::new();
+    let pj = serde_json::to_string(&plant).unwrap();
+    let sj = serde_json::to_string(&st).unwrap();
+    let back: Pwr = serde_json::from_str::<Pwr>(&pj).unwrap().restored();
+    let st2: crate::Station = serde_json::from_str(&sj).unwrap();
+    assert_eq!(
+        back.kinetics.period.is_infinite(),
+        plant.kinetics.period.is_infinite()
+    );
+    assert!(st2.pending.is_none());
+    let c = Career::new(1990, Difficulty::Normal);
+    let cj = serde_json::to_string(&c).unwrap();
+    let c2: Career = serde_json::from_str(&cj).unwrap();
+    assert_eq!(c2.money, c.money);
+}

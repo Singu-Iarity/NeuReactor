@@ -33,6 +33,16 @@ pub struct World {
     pub station: nr_game::Station,
     pub time_scale: f64,
     pub paused: bool,
+    /// Auto time warp: run at `warp_factor` while the unit is steady on its
+    /// dispatch target; drop back as soon as anything needs the operator.
+    pub auto_warp: bool,
+    pub warp_factor: f64,
+    /// Currently warping (the time scale was raised by auto warp).
+    pub warping: bool,
+    /// Time scale to return to when the warp ends.
+    pub warp_return: f64,
+    /// Why auto warp is holding (empty while warping).
+    pub warp_reason: String,
     pub operator_token: String,
     pub plugins: BTreeMap<String, PluginRecord>,
     pub events: Vec<LoggedEvent>,
@@ -63,6 +73,11 @@ impl World {
             station: nr_game::Station::new(),
             time_scale: 1.0,
             paused: false,
+            auto_warp: false,
+            warp_factor: 1000.0,
+            warping: false,
+            warp_return: 1.0,
+            warp_reason: String::new(),
             operator_token: random_token(),
             plugins: BTreeMap::new(),
             events: Vec::new(),

@@ -45,7 +45,7 @@ impl Default for RpsSetpoints {
 }
 
 /// Measured (instrument) values the RPS acts on.
-#[derive(Debug, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct RpsInputs {
     pub sr_cps: f64,
     pub ir_amps: f64,
@@ -61,7 +61,7 @@ pub struct RpsInputs {
     pub turbine_tripped: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct Rps {
     pub setpoints: RpsSetpoints,
 }

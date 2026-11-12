@@ -214,6 +214,7 @@ pub struct Station {
     pub boron_sample: Option<f64>,
     pub messages: Vec<Message>,
     replies: Vec<PendingReply>,
+    #[serde(with = "nr_core::serde_f64")]
     next_request_at: f64,
     next_id: u32,
     seq: u64,

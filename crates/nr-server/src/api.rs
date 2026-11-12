@@ -211,8 +211,13 @@ fn api_authed(
             }
             let mut t = w.plant.telemetry(w.time_scale, w.paused);
             t.alarms.extend(w.station.alarms(&w.plant));
+            let mut v = serde_json::to_value(t).unwrap();
+            v["auto_warp"] = json!(w.auto_warp);
+            v["warp_factor"] = json!(w.warp_factor);
+            v["warping"] = json!(w.warping);
+            v["warp_reason"] = json!(w.warp_reason);
             drop(w);
-            json_resp(req, 200, serde_json::to_value(t).unwrap())
+            json_resp(req, 200, v)
         }
         (Method::Get, "/api/v1/truth") => {
             if !can_read(&origin, Scope::TruthRead, mode) {
@@ -272,6 +277,61 @@ fn api_authed(
             match result {
                 Ok(()) => json_resp(req, 200, json!({ "ok": true })),
                 Err(e) => error(req, 400, &e),
+            }
+        }
+        (Method::Post, "/api/v1/time/auto_warp") if is_operator => {
+            #[derive(Deserialize)]
+            struct WarpReq {
+                on: bool,
+                factor: Option<f64>,
+            }
+            let Ok(r) = serde_json::from_str::<WarpReq>(body) else {
+                drop(w);
+                return error(req, 400, "expected {\"on\": bool, \"factor\": number}");
+            };
+            if let Some(f) = r.factor {
+                w.warp_factor = f.clamp(5.0, 5000.0);
+            }
+            w.auto_warp = r.on;
+            drop(w);
+            json_resp(req, 200, json!({ "ok": true }))
+        }
+        (Method::Get, "/api/v1/saves") if is_operator => {
+            drop(w);
+            json_resp(req, 200, json!(crate::saves::list()))
+        }
+        (Method::Post, p) if is_operator && p.starts_with("/api/v1/saves/") => {
+            #[derive(Deserialize)]
+            struct SaveReq {
+                name: String,
+            }
+            let action = &p["/api/v1/saves/".len()..];
+            let Ok(r) = serde_json::from_str::<SaveReq>(body) else {
+                drop(w);
+                return error(req, 400, "expected {\"name\": string}");
+            };
+            let result = match action {
+                "save" => {
+                    crate::saves::save(&w, &r.name).map(|_| format!("Game saved: {}", r.name))
+                }
+                "load" => {
+                    crate::saves::load(&mut w, &r.name).map(|_| format!("Game loaded: {}", r.name))
+                }
+                "delete" => {
+                    crate::saves::delete(&r.name).map(|_| format!("Save deleted: {}", r.name))
+                }
+                _ => Err("unknown save action".into()),
+            };
+            match result {
+                Ok(msg) => {
+                    w.log(PlantEvent::info(&msg));
+                    drop(w);
+                    json_resp(req, 200, json!({ "ok": true }))
+                }
+                Err(e) => {
+                    drop(w);
+                    error(req, 400, &e)
+                }
             }
         }
         (Method::Get, "/api/v1/core_layout") if is_operator => {

@@ -66,14 +66,20 @@ dependencies = [
 [[package]]
 name = "nr-core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "nr-game"
 version = "0.1.0"
 dependencies = [
  "nr-api",
+ "nr-core",
  "nr-reactors",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
 
 /// Piecewise-linear 1-D lookup table with monotonically increasing `x`.
 /// Values outside the table range are clamped to the end points.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Table1D {
     xs: Vec<f64>,
     ys: Vec<f64>,
@@ -62,7 +62,7 @@ impl Table1D {
 }
 
 /// Proportional-integral controller with output clamping and anti-windup.
-#[derive(Debug, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy)]
 pub struct Pi {
     pub kp: f64,
     pub ki: f64,
@@ -111,7 +111,7 @@ impl Pi {
 }
 
 /// Limits how fast a value may change (units per second).
-#[derive(Debug, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy)]
 pub struct RateLimiter {
     pub rate: f64,
 }
@@ -124,7 +124,7 @@ impl RateLimiter {
 }
 
 /// Deterministic xorshift64* RNG so simulations replay exactly from a seed.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Rng(u64);
 
 impl Rng {

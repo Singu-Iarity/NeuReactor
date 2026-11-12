@@ -29,6 +29,13 @@
       <button data-scale="1000">1000×</button>
       <button data-scale="5000">5000×</button>
     </div>
+    <div class="warpctl" title="Auto time warp: runs fast while the unit is steady on its grid target, and drops back as soon as the grid asks for a change or anything needs you">
+      <button id="warp">AUTO WARP</button>
+      <select id="warp-factor">
+        <option value="100">100×</option><option value="300">300×</option><option value="1000" selected>1000×</option><option value="5000">5000×</option>
+      </select>
+      <span id="warp-state" class="warp-state"></span>
+    </div>
     <div class="master">
       <button class="pb-round red" id="master-ack" title="Master acknowledge">ACK</button>
       <button class="pb-round red" id="master-sil" title="Silence horn">SIL</button>
