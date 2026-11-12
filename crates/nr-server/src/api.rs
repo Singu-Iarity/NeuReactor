@@ -529,6 +529,19 @@ fn station_action(w: &mut World, action: &str, body: &str) -> Result<(), String>
             }
             Ok(())
         }
+        "call_to" => {
+            #[derive(Deserialize)]
+            struct CallToReq {
+                call: nr_game::Call,
+                to: String,
+            }
+            let c: CallToReq = serde_json::from_str(body).map_err(parse)?;
+            if !nr_game::station::STATIONS.contains(&c.to.as_str()) {
+                return Err("unknown station".into());
+            }
+            w.station.call_to(c.call, &c.to, t);
+            Ok(())
+        }
         "load_change" => {
             #[derive(Deserialize)]
             struct ChangeReq {

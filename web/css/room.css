@@ -581,7 +581,7 @@ body.bf .mp-win.flash { background: #3a3424; color: #6f6650; box-shadow: none; }
 .msg-dated { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
 .crt-bezel { background: #c9c3b2; padding: 14px 14px 8px; border-radius: 10px; border: 2px solid #8a8473; box-shadow: inset 0 0 0 2px #e2ddcf; }
 .crt { background: #031006; border-radius: 14px / 18px; padding: 10px 12px; box-shadow: inset 0 0 30px #000, 0 0 0 4px #222; }
-.crt-screen { margin: 0; width: 64ch; max-width: calc(100vw - 120px); height: 20.5em; overflow: hidden; color: #39ff6a; font: 11px/1.25 "Courier New", monospace;
+.crt-screen { margin: 0; width: 64ch; max-width: calc(100vw - 120px); height: 21.5em; overflow: hidden; color: #39ff6a; font: 11px/1.25 "Courier New", monospace;
   text-shadow: 0 0 4px #39ff6a99; white-space: pre; background: repeating-linear-gradient(#0000 0 2px, #0003 2px 3px); }
 .crt-screen.off { color: transparent; text-shadow: none; }
 .crt-fkeys { display: flex; gap: 4px; justify-content: center; margin-top: 8px; }
@@ -672,3 +672,5 @@ body.dc-flicker .ann-win, body.dc-flicker .lamp, body.dc-flicker .fo-win { anima
 .save-name { padding: 4px 6px; font: 12px var(--mono); border: 1px solid #333; border-radius: 3px; }
 .save-table td { padding: 3px 10px 3px 0; }
 .hmi-dest { padding: 4px; border: 1px solid #8794a3; border-radius: 3px; font: 12px system-ui, sans-serif; }
+.crt-pb.dest { background: #5a8ad6; }
+.msg-vintage .selector .plate { font-size: 8px; }

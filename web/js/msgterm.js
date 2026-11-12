@@ -7,7 +7,7 @@
 //   modern (Plant Messaging HMI + plant computer): workstation window with a
 //     message table, mouse acknowledgement and free-text requests.
 
-import { h, plate } from "./widgets.js";
+import { h, plate, selector } from "./widgets.js";
 import { api, toast } from "./api.js";
 import { play } from "./sound.js";
 
@@ -20,11 +20,22 @@ const REQUESTS = [
   ["boron_sample", "BORON SAMPLE", "Chemistry: RCS boron sample"],
 ];
 const CALLERS = ["Turbine Hall", "Grid Dispatch", "Maintenance", "Chemistry", "Plant Operator"];
+const STATIONS = ["Grid Dispatch", "Turbine Hall", "Maintenance", "Chemistry", "Plant Operator"];
+const SHORT = { "Grid Dispatch": "GRID", "Turbine Hall": "TURB", "Maintenance": "MAINT", "Chemistry": "CHEM", "Plant Operator": "OPER" };
 
 const hms = s => `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(Math.floor(s) % 60).padStart(2, "0")}`;
 
 export function messagingTerminal(ctx) {
+  // Modern quick buttons are labelled with their destination.
   const call = async c => { play("button"); await api("/station/call", { call: c }); ctx.pollStation(); };
+  // Older systems address requests with a station selector: the request
+  // goes wherever the selector points.
+  const callTo = async (c, to) => {
+    play("button");
+    const r = await api("/station/call_to", { call: c, to });
+    if (!r.ok) { toast(r.error); play("deny"); }
+    ctx.pollStation();
+  };
   const ack = async seq => { await api("/station/ack", { seq: seq ?? null }); ctx.pollStation(); };
 
   // ------------------------------------------------------------ vintage
@@ -40,16 +51,20 @@ export function messagingTerminal(ctx) {
     } }, h("div", { class: "mp-name" }, c.toUpperCase()), loc);
     return { c, w, loc };
   });
-  const vReq = REQUESTS.map(([c, label]) => h("button", { class: "mp-req", onclick: () => call(c) }, label));
+  let vDest = "Grid Dispatch";
+  const vSel = selector("CALL STATION", STATIONS.map(d => ({ label: SHORT[d], value: d })), v => { vDest = v; vSel.update(vDest); });
+  vSel.update(vDest);
+  const vReq = REQUESTS.map(([c, label]) => h("button", { class: "mp-req", onclick: () => callTo(c, vDest) }, label));
   const vintage = h("div", { class: "msg-vintage" },
     h("div", { class: "mp-grid" }, ...wins.map(x => x.w)),
     strip,
-    h("div", { class: "mp-reqs" }, h("div", { class: "mp-reqs-l" }, "REQUEST"), ...vReq));
+    h("div", { class: "row tight" }, vSel.el,
+      h("div", { class: "mp-reqs" }, h("div", { class: "mp-reqs-l" }, "REQUEST →"), ...vReq)));
 
   // ------------------------------------------------------------ dated
-  let power = true, scroll = 0;
+  let power = true, scroll = 0, dDest = 0;
   const screen = h("pre", { class: "crt-screen" });
-  const fkeys = REQUESTS.map(([c, label], i) => h("button", { class: "crt-fkey", title: label, onclick: () => { if (power) call(c); } }, `F${i + 1}`));
+  const fkeys = REQUESTS.map(([c, label], i) => h("button", { class: "crt-fkey", title: `${label} → selected destination`, onclick: () => { if (power) callTo(c, STATIONS[dDest]); } }, `F${i + 1}`));
   const side = (label, fn, cls = "") => h("div", { class: "crt-side" }, h("button", { class: `crt-pb ${cls}`, onclick: () => { play("button"); fn(); } }), h("span", {}, label));
   const dated = h("div", { class: "msg-dated" },
     h("div", { class: "crt-bezel" }, h("div", { class: "crt" }, screen), h("div", { class: "crt-fkeys" }, ...fkeys)),
@@ -57,6 +72,7 @@ export function messagingTerminal(ctx) {
       side("POWER", () => { power = !power; }, "pwr"),
       side("RESET", () => { scroll = 0; }),
       side("ACK", () => { if (power) ack(null); }, "ack"),
+      side("DEST", () => { if (power) { dDest = (dDest + 1) % STATIONS.length; lastSig = ""; } }, "dest"),
       side("PG UP", () => { scroll += 6; }),
       side("PG DN", () => { scroll = Math.max(0, scroll - 6); })));
 
@@ -127,7 +143,7 @@ export function messagingTerminal(ctx) {
             first = false;
           }
         }
-        const rows = 14;
+        const rows = 11;
         const end = Math.max(0, lines.length - scroll);
         const view = lines.slice(Math.max(0, end - rows), end);
         while (view.length < rows) view.unshift("");
@@ -136,7 +152,7 @@ export function messagingTerminal(ctx) {
           "=".repeat(W),
           ...view,
           "=".repeat(W),
-          `UNACK: ${String(st.unacked).padStart(2)}   ${scroll ? `SCROLL -${scroll}` : "LIVE"}`,
+          `UNACK: ${String(st.unacked).padStart(2)}   ${scroll ? `SCROLL -${scroll}` : "LIVE"}   DEST: ${STATIONS[dDest].toUpperCase()}`,
           "F1 ROLL  F2 SYNC  F3 ONLINE  F4 TRIP  F5 MAINT  F6 BORON",
           "C:\\PMS> _",
         ].join("\n");

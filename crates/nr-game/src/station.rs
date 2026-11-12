@@ -84,6 +84,19 @@ impl Intent {
     }
 }
 
+/// What a request says when sent.
+fn call_text(call: Call) -> &'static str {
+    match call {
+        Call::TurbineRollChecks => "Requesting turbine roll checks.",
+        Call::SyncPermission => "Requesting permission to synchronise.",
+        Call::ReportOnline => "Unit on-line.",
+        Call::ReportTrip => "Unit trip.",
+        Call::Maintenance => "Requesting a maintenance walkdown.",
+        Call::BoronSample => "Requesting an RCS boron sample.",
+        _ => "Request.",
+    }
+}
+
 /// Stations the control room can message.
 pub const STATIONS: [&str; 5] = [
     "Grid Dispatch",
@@ -607,6 +620,30 @@ impl Station {
             }
         }
         intent
+    }
+
+    /// Place a request through a station selector (older message
+    /// systems): reaches the right party only if `to` is that party;
+    /// otherwise whoever was selected answers, puzzled.
+    pub fn call_to(&mut self, call: Call, to: &str, t: f64) {
+        let party = Intent::Call(call).party();
+        if to == party {
+            self.call(call, t);
+            return;
+        }
+        self.say(
+            t,
+            "Control Room",
+            format!("To {to}: {}", call_text(call)),
+            false,
+        );
+        let at = t + 15.0 + 15.0 * self.rand();
+        self.replies.push(PendingReply {
+            at,
+            call: Call::Misrouted,
+            who: Some(to.to_string()),
+            meant_for: Some(party.to_string()),
+        });
     }
 
     /// Ask grid dispatch to change the committed output to `target` MWe
@@ -1367,5 +1404,26 @@ mod dispatch_tests {
             }
         }
         assert!(taken >= 2, "offers taken {taken}/10");
+    }
+
+    #[test]
+    fn selector_calls_reach_only_the_selected_station() {
+        let mut plant = Pwr::full_power();
+        let mut st = Station::new();
+        st.call_to(Call::BoronSample, "Maintenance", plant.time);
+        plant.time += 60.0;
+        st.tick(&mut plant, 60.0);
+        let m = st
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.from == "Maintenance")
+            .unwrap();
+        assert!(m.text.contains("Chemistry"), "{}", m.text);
+        assert!(st.boron_sample.is_none());
+        st.call_to(Call::BoronSample, "Chemistry", plant.time);
+        plant.time += 700.0;
+        st.tick(&mut plant, 700.0);
+        assert!(st.boron_sample.is_some());
     }
 }
