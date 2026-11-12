@@ -396,43 +396,81 @@ export function annunciatorPanel(title, windows, cols = 4) {
 // ------------------------------------------------------------ recorder
 
 /** Strip-chart recorder: pens = [{tag, label, color, min, max}]. */
+/**
+ * Strip-chart recorder. Records in the background (call push() every poll,
+ * whether or not the tab is visible) and keeps up to 8 h of history: a fine
+ * buffer for the last 15 min and a coarse one (one point per 10 s) behind it.
+ * A chart-speed selector chooses the window; newest data is at the right
+ * edge, with elapsed-time labels on the vertical lines.
+ */
+const SPEEDS = [[60, "1 MIN"], [600, "10 MIN"], [3600, "1 H"], [8 * 3600, "8 H"]];
+const FINE_SPAN = 900, COARSE_STEP = 10, MAX_SPAN = 8 * 3600;
 export function recorder(title, pens, { width = 360, height = 180, span = 600 } = {}) {
   const cv = h("canvas", { width, height, class: "recorder-paper" });
   const legend = h("div", { class: "rec-legend" }, ...pens.map(p => h("span", { style: `--c:${p.color}` }, p.label)));
-  const el = h("div", { class: "recorder" }, h("div", { class: "rec-window" }, cv), legend, plate(title, "small"));
-  const data = [];
+  let win = span;
+  const btns = SPEEDS.map(([s, label]) => h("button", { class: "rec-speed", onclick: () => { play("detent"); win = s; mark(); draw(); } }, label));
+  const mark = () => btns.forEach((b, i) => b.classList.toggle("on", SPEEDS[i][0] === win));
+  mark();
+  const el = h("div", { class: "recorder" }, h("div", { class: "rec-window" }, cv),
+    h("div", { class: "rec-speeds" }, h("span", {}, "CHART SPEED"), ...btns), legend, plate(title, "small"));
+  const fine = [], coarse = [];
+  const fmtAgo = s => s >= 3600 ? `-${(s / 3600).toFixed(s % 3600 ? 1 : 0)}h` : s >= 60 ? `-${Math.round(s / 60)}m` : `-${Math.round(s)}s`;
+  function draw() {
+    const ctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height;
+    const digital = cv.closest("[data-gen]")?.dataset.gen === "digital";
+    ctx.fillStyle = digital ? "#0b1410" : "#f4f0e2";
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = digital ? "#1f3a2c" : "#c9b98f";
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 10; i++) { ctx.beginPath(); ctx.moveTo(W * i / 10, 0); ctx.lineTo(W * i / 10, H); ctx.stroke(); }
+    for (let i = 1; i < 5; i++) { ctx.beginPath(); ctx.moveTo(0, H * i / 5); ctx.lineTo(W, H * i / 5); ctx.stroke(); }
+    ctx.fillStyle = digital ? "#4f8f6c" : "#8a7a52";
+    ctx.font = "9px monospace";
+    for (const i of [2, 4, 6, 8]) ctx.fillText(fmtAgo(win * (10 - i) / 10), W * i / 10 + 2, H - 3);
+    const last = fine.length ? fine[fine.length - 1] : coarse[coarse.length - 1];
+    if (!last) { ctx.fillText("NO DATA YET", W / 2 - 30, H / 2); return; }
+    const t1 = last.t, t0 = t1 - win;
+    const fineStart = fine.length ? fine[0].t : Infinity;
+    const pts = coarse.filter(d => d.t >= t0 - COARSE_STEP && d.t < fineStart).concat(fine.filter(d => d.t >= t0 - 1));
+    pens.forEach((p, k) => {
+      ctx.strokeStyle = p.color; ctx.lineWidth = 1.8; ctx.beginPath();
+      let started = false;
+      for (const d of pts) {
+        const v = d.v[k];
+        if (v === undefined || v === null || Number.isNaN(v)) { started = false; continue; }
+        const x = (d.t - t0) / win * W;
+        const n = p.log ? (Math.log10(Math.max(v, p.min)) - Math.log10(p.min)) / (Math.log10(p.max) - Math.log10(p.min)) : (v - p.min) / (p.max - p.min);
+        const y = 2 + (1 - Math.max(0, Math.min(1, n))) * (H - 4);   // keep pens on the paper at the limits
+        if (started) ctx.lineTo(x, y); else { ctx.moveTo(x, y); started = true; }
+      }
+      ctx.stroke();
+      // Pen tip at the newest value.
+      const v = last.v[k];
+      if (v !== undefined) {
+        const n = p.log ? (Math.log10(Math.max(v, p.min)) - Math.log10(p.min)) / (Math.log10(p.max) - Math.log10(p.min)) : (v - p.min) / (p.max - p.min);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(W - 4, 2 + (1 - Math.max(0, Math.min(1, n))) * (H - 4) - 2, 4, 4);
+      }
+    });
+  }
   return {
     el,
     push(t, readings) {
-      if (data.length && t <= data[data.length - 1].t) return;
-      data.push({ t, v: pens.map(p => readings[p.tag]) });
-      while (data.length > 2 && t - data[0].t > span) data.shift();
+      const lastT = fine.length ? fine[fine.length - 1].t : -Infinity;
+      if (t <= lastT) {
+        // Simulation restarted (scenario load): clear the chart.
+        if (t < lastT - 1) { fine.length = 0; coarse.length = 0; }
+        else return;
+      }
+      const d = { t, v: pens.map(p => readings[p.tag]) };
+      fine.push(d);
+      if (!coarse.length || t - coarse[coarse.length - 1].t >= COARSE_STEP) coarse.push(d);
+      while (fine.length > 2 && t - fine[0].t > FINE_SPAN) fine.shift();
+      while (coarse.length > 2 && t - coarse[0].t > MAX_SPAN) coarse.shift();
     },
-    draw() {
-      const ctx = cv.getContext("2d");
-      const W = cv.width, H = cv.height;
-      const room = cv.closest("[data-gen]")?.dataset.gen;
-      ctx.fillStyle = room === "digital" ? "#0b1410" : "#f4f0e2";
-      ctx.fillRect(0, 0, W, H);
-      ctx.strokeStyle = room === "digital" ? "#1f3a2c" : "#c9b98f";
-      ctx.lineWidth = 1;
-      for (let i = 1; i < 10; i++) { ctx.beginPath(); ctx.moveTo(W * i / 10, 0); ctx.lineTo(W * i / 10, H); ctx.stroke(); }
-      for (let i = 1; i < 5; i++) { ctx.beginPath(); ctx.moveTo(0, H * i / 5); ctx.lineTo(W, H * i / 5); ctx.stroke(); }
-      if (data.length < 2) return;
-      const t1 = data[data.length - 1].t, t0 = t1 - span;
-      pens.forEach((p, k) => {
-        ctx.strokeStyle = p.color; ctx.lineWidth = 1.6; ctx.beginPath();
-        data.forEach((d, i) => {
-          const x = (d.t - t0) / span * W;
-          let v = d.v[k];
-          if (v === undefined) return;
-          const n = p.log ? (Math.log10(Math.max(v, p.min)) - Math.log10(p.min)) / (Math.log10(p.max) - Math.log10(p.min)) : (v - p.min) / (p.max - p.min);
-          const y = H - Math.max(0, Math.min(1, n)) * H;
-          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-        });
-        ctx.stroke();
-      });
-    },
+    draw,
   };
 }
 

@@ -24,7 +24,7 @@ export function build(root, ctx) {
   const rec = recorder("DEMAND vs NET", [
     { tag: "demand", label: "Demand", color: "#1c5bd6", min: 0, max: 1300 },
     { tag: "net_mwe", label: "Net output", color: "#d6261c", min: 0, max: 1300 },
-  ], { span: 3600 * 2 });
+  ], { span: 3600 });
   const request = h("div", { class: "request" });
   const perf = h("div", { class: "card-sub" });
   const history = h("ol", { class: "events news" });
@@ -57,14 +57,15 @@ export function build(root, ctx) {
     const st = ctx.station();
     const R = t.readings;
     const d = st?.demand_mwe ?? 0;
+    rec.push(t.sim_time, { demand: d, net_mwe: Math.max(0, R.net_mwe) });
+    if (!visible) return;   // keep recording while another tab is shown
     demandM.update(d);
     netM.update(Math.max(0, R.net_mwe), d);
     gross.update(R.gross_mwe);
     net.update(R.net_mwe);
     demand.update(d);
     freq.update(R.grid_freq_hz);
-    rec.push(t.sim_time, { demand: d, net_mwe: Math.max(0, R.net_mwe) });
-    if (visible) rec.draw();
+    rec.draw();
     if (!st) return;
     const p = st.pending;
     request.replaceChildren(p

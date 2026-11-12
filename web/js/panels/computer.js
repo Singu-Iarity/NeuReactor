@@ -88,7 +88,8 @@ export function build(root, ctx) {
 
   return (t, visible) => {
     for (const r of recs) r.push(t.sim_time, t.readings);
-    if (visible) recs.forEach(r => r.draw());
+    if (!visible) return;   // keep recording while another tab is shown
+    recs.forEach(r => r.draw());
     hs.update(t.scenario === "hot_standby"); fp.update(t.scenario === "full_power");
     analog.update(t.upgrades.every(u => !u.installed)); digital.update(t.upgrades.every(u => u.installed));
     training.update(t.training_mode);

@@ -20,7 +20,7 @@ import * as career from "./panels/career.js";
 
 const PANELS = [reactor, rcs, cvcs, steam, turbine, electrical, grid, comms, equipment, computer, career];
 /** Panels that must see every telemetry update even when hidden. */
-const ALWAYS = new Set(["computer"]);
+const ALWAYS = new Set(["computer", "grid"]);
 const $ = s => document.querySelector(s);
 
 let telemetry = null;
