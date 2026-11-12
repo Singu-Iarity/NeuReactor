@@ -166,10 +166,38 @@ function setClass(el, cls) {
   if (lastClass.get(el) !== cls) { lastClass.set(el, cls); el.className = cls; }
 }
 
+// Control room lighting: normal AC lighting from the 6.9 kV buses (through
+// 480 V lighting panels), AC emergency lighting from the diesel-backed safety
+// buses, battery emergency lights from 125 V DC. Lights flicker as they
+// change over.
+let lightLevel = "normal", lightTimer = null;
+function updateLighting(t) {
+  const b = t.electrical?.buses;
+  if (!b) return;
+  // Annunciators and indicating lamps run on 125 V DC.
+  const dcLost = !b.dc;
+  if (document.body.classList.contains("dc-lost") !== dcLost) {
+    document.body.classList.toggle("dc-lost", dcLost);
+    document.body.classList.add("dc-flicker");
+    setTimeout(() => document.body.classList.remove("dc-flicker"), 1200);
+  }
+  const level = b.bus_a || b.bus_b ? "normal" : b.safety1 || b.safety2 ? "emergency" : b.dc ? "battery" : "dark";
+  if (level === lightLevel) return;
+  const el = document.getElementById("mcr-lights");
+  const worse = ["normal", "emergency", "battery", "dark"];
+  const dimming = worse.indexOf(level) > worse.indexOf(lightLevel);
+  lightLevel = level;
+  clearTimeout(lightTimer);
+  el.className = `lights-${level} flicker`;
+  sound.play(dimming ? "jhandle" : "detent");
+  lightTimer = setTimeout(() => { el.className = `lights-${level}`; }, dimming ? 900 : 1400);
+}
+
 function render() {
   const t = telemetry;
   // A different unit size (new core, sandbox size change): rebuild the room.
   if (t.unit_size && t.unit_size !== builtSize) { location.reload(); return; }
+  updateLighting(t);
   document.querySelectorAll(".sect, .panel-head").forEach(el => {
     const g = t.sections[el.dataset.section] || "analog";
     if (el.dataset.gen !== g) el.dataset.gen = g;

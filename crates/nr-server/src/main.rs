@@ -140,6 +140,13 @@ fn sim_loop(world: Arc<Mutex<World>>) {
                 );
             }
         }
+        if elapsed > 0.0 {
+            let (price, om) = career
+                .as_ref()
+                .map(|c| (c.price_mwh, c.om_per_day))
+                .unwrap_or((45.0, 120_000.0));
+            station.account(plant, price, om, elapsed);
+        }
         let mult = station.revenue_multiplier(plant);
         if let Some(c) = career.as_mut() {
             c.tick_with(elapsed, plant, mult);

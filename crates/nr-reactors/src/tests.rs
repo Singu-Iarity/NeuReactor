@@ -450,3 +450,64 @@ fn ic_not_scaled_for_core_disables_automation() {
     p.automation.equipment.kits.insert(key);
     assert!(p.automation.equipment.ic_matches());
 }
+
+#[test]
+fn scram_fast_transfers_buses_and_rcps_keep_running() {
+    let mut p = Pwr::full_power();
+    op(&mut p, Command::Scram);
+    p.advance(60.0);
+    assert!(!p.tg.breaker, "generator off-line after the trip");
+    assert!(
+        p.rcp_running.iter().all(|r| *r),
+        "RCPs ride through on the SUT"
+    );
+    assert!(p.elec.buses.bus_a && p.elec.buses.bus_b);
+    assert!(!p.elec.sut_tripped);
+    // Restarting a stopped RCP on the startup transformer is fine...
+    op(
+        &mut p,
+        Command::SetCoolantPump {
+            index: 3,
+            running: false,
+        },
+    );
+    p.advance(30.0);
+    op(
+        &mut p,
+        Command::SetCoolantPump {
+            index: 3,
+            running: true,
+        },
+    );
+    p.advance(30.0);
+    assert!(!p.elec.sut_tripped, "one RCP start at a time");
+    assert!(p.rcp_running[3]);
+}
+
+#[test]
+fn pumps_on_a_dead_bus_cannot_start() {
+    let mut p = Pwr::hot_standby();
+    op(
+        &mut p,
+        Command::SetElecBreaker {
+            breaker: "tie_a_b".into(),
+            closed: false,
+        },
+    );
+    p.advance(5.0);
+    assert!(
+        !p.elec.buses.bus_b,
+        "bus B has no source at startup without the tie"
+    );
+    assert!(!p.rcp_running[2] && !p.rcp_running[3]);
+    assert!(p
+        .command(
+            &Command::SetCoolantPump {
+                index: 3,
+                running: true
+            },
+            &Origin::Operator
+        )
+        .is_err());
+    assert!(p.rcp_running[0], "bus A pumps keep running");
+}

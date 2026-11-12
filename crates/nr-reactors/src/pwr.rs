@@ -232,6 +232,17 @@ const SENSOR_SPEC: &[(&str, f64, f64, (f64, f64))] = &[
     ("gen_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
     ("grid_voltage_kv", 0.2, 0.02, (0.0, 30.0)),
     ("excitation_pct", 0.0, 0.0, (0.0, 100.0)),
+    ("gen_mw", 0.5, 2.0, (-200.0, 1600.0)),
+    ("gen_mvar", 0.5, 2.0, (-1000.0, 1600.0)),
+    ("gen_mva", 0.5, 2.0, (0.0, 1800.0)),
+    ("gen_pf", 0.5, 0.002, (0.0, 1.0)),
+    ("gen_stator_ka", 0.5, 0.05, (0.0, 60.0)),
+    ("field_amps", 0.5, 5.0, (0.0, 12000.0)),
+    ("switchyard_kv", 0.5, 0.3, (0.0, 400.0)),
+    ("bus_a_kv", 0.2, 0.01, (0.0, 8.0)),
+    ("bus_b_kv", 0.2, 0.01, (0.0, 8.0)),
+    ("safety1_kv", 0.2, 0.01, (0.0, 5.0)),
+    ("safety2_kv", 0.2, 0.01, (0.0, 5.0)),
     ("generator_health_pct", 0.0, 0.0, (0.0, 100.0)),
     ("turbine_vibration_um", 1.0, 1.5, (0.0, 300.0)),
     ("power_ref_pct", 0.0, 0.0, (0.0, 120.0)),
@@ -687,7 +698,7 @@ impl Pwr {
     fn apply_size(&mut self) {
         let s = self.size().scale();
         self.elec.scale = s;
-        self.elec.sut_rating = 50.0 * s;
+        self.elec.sut_rating = 80.0 * s;
         self.elec.uat_rating = 80.0 * s;
     }
 
@@ -860,6 +871,15 @@ impl Pwr {
         }
     }
 
+    /// Is 6.9 kV bus A (false) or B (true) energised?
+    fn bus_live(&self, bus_b: bool) -> bool {
+        if bus_b {
+            self.elec.buses.bus_b
+        } else {
+            self.elec.buses.bus_a
+        }
+    }
+
     /// Station service load drawn by the plant's own equipment [MW].
     pub fn house_load(&self) -> f64 {
         self.elec.house_load_mw
@@ -966,7 +986,10 @@ impl Pwr {
             }
         }
         if !b.bus_a {
-            self.condenser.vacuum_pumps = [false; 2];
+            self.condenser.vacuum_pumps[0] = false;
+        }
+        if !b.bus_b {
+            self.condenser.vacuum_pumps[1] = false;
         }
         if !b.safety1 {
             self.heaters = 0.0;
@@ -1356,6 +1379,82 @@ impl Pwr {
         m.insert("sync_phase_deg", self.tg.phase);
         m.insert("sync_slip_hz", self.tg.slip_hz());
         m.insert("gen_voltage_kv", self.tg.gen_kv());
+        // Reactive power from excitation: internal EMF vs grid voltage across
+        // the synchronous reactance (over-excited = MVAR out to the grid).
+        let rated_mva = self.tg.rating / 1e6 / 0.9;
+        let p_mw = if self.tg.breaker {
+            self.tg.net_power / 1e6
+        } else {
+            0.0
+        };
+        let q_mvar = if self.tg.breaker && self.tg.grid_kv > 1.0 {
+            let emf =
+                nr_physics::turbine_generator::RATED_KV * self.tg.speed * self.tg.excitation / 0.5;
+            clamp(
+                rated_mva * (emf / self.tg.grid_kv - 1.0) / 0.6,
+                -0.6 * rated_mva,
+                rated_mva,
+            )
+        } else {
+            0.0
+        };
+        let s_mva = (p_mw * p_mw + q_mvar * q_mvar).sqrt();
+        let v_kv = self.tg.gen_kv().max(1.0);
+        m.insert("gen_mw", p_mw);
+        m.insert("gen_mvar", q_mvar);
+        m.insert("gen_mva", s_mva);
+        m.insert("gen_pf", if s_mva > 1.0 { p_mw / s_mva } else { 1.0 });
+        m.insert("gen_stator_ka", s_mva / (3f64.sqrt() * v_kv));
+        m.insert(
+            "field_amps",
+            self.tg.excitation * 9_000.0 * rated_mva / 1280.0,
+        );
+        m.insert(
+            "switchyard_kv",
+            if self.elec.grid_available {
+                345.0 * self.tg.grid_kv / nr_physics::turbine_generator::RATED_KV
+            } else {
+                0.0
+            },
+        );
+        let sag = |load: f64, rating: f64| 1.0 - 0.04 * (load / rating.max(1.0)).min(1.5);
+        let src = if self.elec.closed(Breaker::BusAUat) && self.tg.breaker {
+            sag(self.elec.uat_load_mw, self.elec.uat_rating)
+        } else {
+            sag(self.elec.sut_load_mw, self.elec.sut_rating)
+        };
+        m.insert(
+            "bus_a_kv",
+            if self.elec.buses.bus_a {
+                6.9 * src
+            } else {
+                0.0
+            },
+        );
+        m.insert(
+            "bus_b_kv",
+            if self.elec.buses.bus_b {
+                6.9 * src
+            } else {
+                0.0
+            },
+        );
+        m.insert(
+            "safety1_kv",
+            if self.elec.buses.safety1 {
+                4.16 * src
+            } else {
+                0.0
+            },
+        );
+        m.insert(
+            "safety2_kv",
+            if self.elec.buses.safety2 {
+                4.16 * src
+            } else {
+                0.0
+            },
+        );
         m.insert("grid_voltage_kv", self.tg.grid_kv);
         m.insert("excitation_pct", self.tg.excitation * 100.0);
         m.insert("generator_health_pct", self.tg.health);
@@ -2065,12 +2164,24 @@ impl Pwr {
             }
             Command::SetBoration { mode } => self.boration = *mode,
             Command::SetCwPump { index, running } => {
+                if *running && *index < 3 && !self.bus_live(*index >= 2) {
+                    return deny(&format!(
+                        "CW pump {} has no power: its 6.9 kV bus is de-energised",
+                        index + 1
+                    ));
+                }
                 let Some(p) = self.condenser.cw_pumps.get_mut(*index) else {
                     return deny("CW pump index must be 0-2");
                 };
                 *p = *running;
             }
             Command::SetVacuumPump { index, running } => {
+                if *running && *index < 2 && !self.bus_live(*index == 1) {
+                    return deny(&format!(
+                        "vacuum pump {} has no power: its 6.9 kV bus is de-energised",
+                        index + 1
+                    ));
+                }
                 let Some(p) = self.condenser.vacuum_pumps.get_mut(*index) else {
                     return deny("vacuum pump index must be 0-1");
                 };
@@ -2138,6 +2249,13 @@ impl Pwr {
             Command::SetCoolantPump { index, running } => {
                 if *index >= 4 {
                     return deny("RCP index must be 0-3");
+                }
+                if *running && !self.bus_live(*index >= 2) {
+                    return deny(&format!(
+                        "RCP {} has no power: 6.9 kV bus {} is de-energised",
+                        index + 1,
+                        if *index >= 2 { "B" } else { "A" }
+                    ));
                 }
                 self.rcp_running[*index] = *running;
             }

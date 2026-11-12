@@ -141,6 +141,10 @@ export function build(root, ctx) {
   const sutM = roundMeter("STARTUP XFMR LOAD", { min: 0, max: 80 * rating.scale, unit: "MW", major: 8, digits: 1, bands: [{ from: 50 * rating.scale, to: 60 * rating.scale, c: "yellow" }, { from: 60 * rating.scale, to: 80 * rating.scale, c: "red" }] });
   const uatM = roundMeter("UNIT AUX XFMR LOAD", { min: 0, max: 120 * rating.scale, unit: "MW", major: 6, digits: 1, bands: [{ from: 80 * rating.scale, to: 96 * rating.scale, c: "yellow" }, { from: 96 * rating.scale, to: 120 * rating.scale, c: "red" }] });
   const house = readout("HOUSE LOAD [MW]", { digits: 1, size: "big" });
+  const busV = [
+    ["bus_a_kv", "6.9 kV BUS A", 8], ["bus_b_kv", "6.9 kV BUS B", 8],
+    ["safety1_kv", "4.16 kV SAFETY 1", 5], ["safety2_kv", "4.16 kV SAFETY 2", 5],
+  ].map(([tag, label, max]) => ({ tag, m: edgewise(label, { min: 0, max, unit: "kV", major: 4, digits: 2, bands: [{ from: 0, to: max * 0.8, c: "yellow" }] }) }));
   const imp = readout("GRID IMPORT [MW]", { digits: 1 });
   const reset = pushbutton("XFMR LOCKOUT RESET (86)", { color: "amber", onPress: () => ctx.send({ type: "reset_transformers" }) });
 
@@ -194,6 +198,8 @@ export function build(root, ctx) {
         h("div", { class: "col" }, sutM.el, uatM.el),
         h("div", { class: "col" }, house.el, imp.el, reset.el, loop.el)),
       h("p", { class: "note" }, "Bus A can be fed from the startup transformer; bus B only from the unit auxiliary transformer (generator on-line) or through the A-B tie. Starting several large motors at once can overload the startup transformer. Click a breaker on the mimic or use its control switch."),
+      plate("BUS VOLTMETERS", "small"),
+      h("div", { class: "row" }, ...busV.map(b => b.m.el)),
       plate("BREAKER CONTROL SWITCHES", "small"),
       h("div", { class: "row tight wrap" }, ...brkSw.map(([, sw]) => sw.el))),
     h("section", { class: "sect", "data-section": "electrical.diesels" }, plate("EMERGENCY DIESEL GENERATORS"),
@@ -210,6 +216,7 @@ export function build(root, ctx) {
     sutM.update(R.sut_load_mw ?? e.sut_load_mw, e.sut_rating * q3);
     uatM.update(R.uat_load_mw ?? e.uat_load_mw, e.uat_rating * q3);
     house.update(e.house_load_mw);
+    busV.forEach(b => b.m.update(R[b.tag] ?? 0));
     imp.update(e.import_mw);
     reset.update(e.sut_tripped || e.uat_tripped);
     loop.update(!e.grid_available, t.game_mode === "career");

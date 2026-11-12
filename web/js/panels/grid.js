@@ -55,6 +55,35 @@ export function build(root, ctx) {
   const month = readout("THIS MONTH: REVENUE - COSTS", { format: money });
   const bonus = h("div", { class: "req-status" }, "");
   const econNote = h("p", { class: "note" }, "");
+  // ---- generator & switchyard metering
+  const mva = Math.round(rating.gross * 1.13 / 0.9 / 100) * 100;
+  const genMw = roundMeter("GENERATOR MW", { min: 0, max: mweScale(), unit: "MW", major: 10, digits: 0 });
+  const genMvar = roundMeter("GENERATOR MVAR", { min: -mva / 2, max: mva / 2, unit: "MVAR (+ out)", major: 8, digits: 0 });
+  const pf = readout("POWER FACTOR", { digits: 3 });
+  const amps = readout("STATOR CURRENT [kA]", { digits: 1 });
+  const genKv = readout("GEN TERMINAL [kV]", { digits: 2 });
+  const yardKv = readout("SWITCHYARD [kV]", { digits: 1 });
+  const fieldA = readout("FIELD CURRENT [A]", { digits: 0 });
+  const genHz = readout("GEN FREQ [Hz]", { digits: 3 });
+
+  // ---- energy & money counters (odometer style)
+  const counter = (label, digits = 0, unit = "") => readout(label, { digits, unit });
+  const totGross = counter("GROSS GENERATION", 0, "MWh");
+  const totNet = counter("NET TO GRID", 0, "MWh");
+  const totHouse = counter("STATION SERVICE", 0, "MWh");
+  const totImport = counter("IMPORTED FROM GRID", 0, "MWh");
+  const totRev = readout("ALL-TIME REVENUE", { format: v => money(v) });
+  const totCost = readout("ALL-TIME RUNNING COSTS", { format: v => money(v) });
+  const totPen = readout("ALL-TIME PENALTIES", { format: v => money(v) });
+  const totProfit = readout("ALL-TIME PROFIT", { format: v => money(v), size: "big" });
+  const insTarget = readout("INSTRUCTION TARGET [MWe]", { digits: 0 });
+  const insTime = readout("TIME ON INSTRUCTION", { format: v => fmt(v) });
+  const insOn = readout("ON TARGET", { format: v => `${v.toFixed(0)} %` });
+  const insMwh = counter("DELIVERED", 0, "MWh");
+  const insRev = readout("INSTRUCTION REVENUE", { format: v => money(v) });
+  const insProfit = readout("INSTRUCTION PROFIT", { format: v => money(v), size: "big" });
+  const histTable = h("tbody");
+
   const ulc = maStation("UNIT LOAD CONTROLLER", {
     module: "plant_master", pvTag: "gross_mwe", spKey: "target_mwe", spStep: 10, digits: 0, devSpan: 50, range: [0, Math.ceil(rating.gross * 1.08 / 50) * 50],
   }, ctx);
@@ -71,6 +100,18 @@ export function build(root, ctx) {
         h("div", { class: "col" }, profitH.el, perDay.el),
         h("div", { class: "col" }, atDemand.el, month.el)),
       econNote),
+    h("section", { class: "sect wide", "data-section": "grid.station" }, plate("GENERATOR & SWITCHYARD METERING"),
+      h("div", { class: "row" }, genMw.el, genMvar.el,
+        h("div", { class: "col" }, pf.el, amps.el, fieldA.el),
+        h("div", { class: "col" }, genKv.el, yardKv.el, genHz.el)),
+      h("p", { class: "note" }, "MVAR follows excitation: raise the voltage regulator setpoint to export reactive power (lagging power factor), lower it to absorb. Grid operators usually ask for a slightly lagging power factor around 0.95.")),
+    h("section", { class: "sect wide", "data-section": "grid.station" }, plate("ENERGY & REVENUE COUNTERS"),
+      h("div", { class: "row" },
+        h("div", { class: "col" }, plate("ALL TIME", "small"), totGross.el, totNet.el, totHouse.el, totImport.el),
+        h("div", { class: "col" }, plate("ALL TIME $", "small"), totRev.el, totCost.el, totPen.el, totProfit.el),
+        h("div", { class: "col" }, plate("CURRENT DISPATCH INSTRUCTION", "small"), insTarget.el, insTime.el, insOn.el, insMwh.el, insRev.el, insProfit.el),
+        h("div", { class: "col" }, plate("RECENT INSTRUCTIONS", "small"),
+          h("table", { class: "bill-table" }, h("thead", {}, h("tr", {}, h("th", {}, "MWe"), h("th", {}, "hours"), h("th", {}, "on tgt"), h("th", {}, "revenue"), h("th", {}, "profit"))), histTable)))),
     h("section", { class: "sect", "data-section": "grid.station" }, plate("UNIT LOAD CONTROL / AGC"),
       h("p", { class: "note" }, "With the Unit Load Controller (plant master) in AUTO and the Grid Dispatch Link installed, AGC follows grid demand automatically."),
       h("div", { class: "row" }, ulc.el)),
@@ -90,7 +131,37 @@ export function build(root, ctx) {
     demand.update(d);
     freq.update(R.grid_freq_hz);
     rec.draw();
+    genMw.update(R.gen_mw ?? 0);
+    genMvar.update(R.gen_mvar ?? 0);
+    pf.update(R.gen_pf ?? 1);
+    amps.update(R.gen_stator_ka ?? 0);
+    genKv.update(R.gen_voltage_kv ?? 0);
+    yardKv.update(R.switchyard_kv ?? 0);
+    fieldA.update(R.field_amps ?? 0);
+    genHz.update(R.gen_freq_hz ?? 0);
     if (!st) return;
+    if (st.totals) {
+      const T = st.totals;
+      totGross.update(T.gross_mwh); totNet.update(T.net_mwh); totHouse.update(T.house_mwh); totImport.update(T.import_mwh);
+      totRev.update(T.revenue); totCost.update(T.costs); totPen.update(T.penalties); totProfit.update(st.totals_profit);
+      const I = st.instruction;
+      insTarget.update(I ? I.target_mwe : 0);
+      insTime.update(I ? t.sim_time - I.started_at : 0);
+      insOn.update(I && I.seconds > 0 ? 100 * I.on_target_s / I.seconds : 0);
+      insMwh.update(I ? I.net_mwh : 0);
+      insRev.update(I ? I.revenue : 0);
+      insProfit.update(st.instruction_profit ?? 0);
+      const hk = JSON.stringify(st.history.map(x => x.id));
+      if (histTable.dataset.k !== hk) {
+        histTable.dataset.k = hk;
+        histTable.replaceChildren(...st.history.map(x => h("tr", {},
+          h("td", {}, x.target_mwe.toFixed(0)),
+          h("td", {}, (x.seconds / 3600).toFixed(1)),
+          h("td", {}, x.seconds > 0 ? `${(100 * x.on_target_s / x.seconds).toFixed(0)} %` : "—"),
+          h("td", { class: "num" }, money(x.revenue)),
+          h("td", { class: "num" }, money(x.revenue - x.costs - x.penalties)))));
+      }
+    }
     const e = st.economics;
     if (e) {
       price.update(e.price_mwh);

@@ -1,6 +1,7 @@
 // Operating procedures on clipboards. Each step can carry a live check that
 // ticks it automatically from telemetry; the rest are checked off by hand.
 
+import { rating } from "./rating.js";
 import { h } from "./widgets.js";
 import { play } from "./sound.js";
 
@@ -66,6 +67,31 @@ export const PROCEDURES = [
     ],
   },
   {
+    id: "ref1", code: "REF-1", title: "Reactor Power vs Turbine Load", tab: "grid",
+    reference: () => {
+      const g = rating.gross;
+      const loss = 0.045 * g;            // turbine no-load losses (~4 % of rating)
+      const rx = mwe => (mwe + loss) / (g + loss) * 100;
+      const perPct = (g + loss) / 100;
+      const rows = [0, 0.25, 0.5, 0.75, 1].map(f => [Math.round(f * g), Math.round(f * 100), rx(f * g)]);
+      return [
+        h("p", {}, h("b", {}, "Rule of thumb: "), "reactor power % ≈ 4 % + 0.96 × turbine load %. ",
+          `Each 1 % of reactor power ≈ ${perPct.toFixed(0)} MWe gross on this ${g.toFixed(0)} MWe unit.`),
+        h("p", {}, "The 4 % is what the turbine needs just to turn at 1800 rpm (windage, friction, no-load steam). Above that, reactor power and electrical output rise almost in step."),
+        h("table", { class: "proc-table" },
+          h("thead", {}, h("tr", {}, h("th", {}, "Gross MWe"), h("th", {}, "Turbine load"), h("th", {}, "Reactor power"))),
+          h("tbody", {}, ...rows.map(([mwe, load, r]) => h("tr", {},
+            h("td", {}, mwe === 0 ? "0 (synced, no load)" : `${mwe}`), h("td", {}, `${load} %`), h("td", {}, `≈ ${r.toFixed(0)} %`))))),
+        h("ul", {},
+          h("li", {}, "Below about 30 % load the feedwater is colder (little extraction heating): add 1–2 % reactor power."),
+          h("li", {}, `Grid demand is NET. Add the house load first (about ${(0.045 * g).toFixed(0)}–${(0.052 * g).toFixed(0)} MW at power; see the Electrical tab).`),
+          h("li", {}, h("b", {}, "The real check is Tavg vs Tref"), " on the rod control station: Tavg below Tref = reactor behind the turbine (withdraw rods or reduce load); above Tref = reactor ahead (insert rods or take more load)."),
+          h("li", {}, "Raise turbine load in small steps (≈5 %) and let Tavg settle back on Tref before the next step. Rod control in AUTO does this for you.")),
+      ];
+    },
+    steps: [],
+  },
+  {
     id: "op5", code: "OP-5", title: "Normal Shutdown", tab: "turbine",
     steps: [
       ["Notify Grid Dispatch; reduce load at ≤ 30 MW/min", null],
@@ -107,6 +133,8 @@ function renderModal() {
   const p = PROCEDURES.find(x => x.id === current);
   const checks = manual[p.id] || {};
   const list = modal.querySelector(".proc-steps");
+  const ref = modal.querySelector(".proc-ref");
+  ref.replaceChildren(...(p.reference ? p.reference() : []));
   list.replaceChildren(...p.steps.map(([text, auto], i) => {
     const live = auto && t ? !!auto(t) : false;
     const done = auto ? live : !!checks[i];
@@ -129,19 +157,54 @@ export function openProcedure(id, telemetryGetter) {
   current = id;
   play("cover");
   if (!modal) {
-    modal = h("div", { class: "proc-overlay", onclick: e => { if (e.target === modal) close(); } },
+    // A floating clipboard: no backdrop, so the board stays usable behind
+    // it. Drag it by the clip bar; its position is remembered.
+    const bar = h("div", { class: "proc-drag", title: "Drag to move" },
+      h("div", { class: "clip" }), h("span", {}, "⠿ drag"),
+      h("button", { class: "proc-x", title: "Close", onclick: close }, "✕"));
+    modal = h("div", { class: "proc-float" },
       h("div", { class: "clipboard-sheet" },
-        h("div", { class: "clip" }),
+        bar,
         h("div", { class: "proc-tabs" }, ...PROCEDURES.map(p => h("button", { class: "proc-tab", "data-id": p.id, onclick: () => { current = p.id; play("detent"); renderModal(); } }, p.code))),
         h("div", { class: "proc-title" }),
+        h("div", { class: "proc-ref" }),
         h("ol", { class: "proc-steps" }),
         h("div", { class: "proc-foot" },
           h("button", { class: "btn", onclick: () => { manual[current] = {}; save(manual); renderModal(); } }, "Clear manual checks"),
           h("button", { class: "btn", onclick: close }, "Close"))));
+    let pos = null;
+    try { pos = JSON.parse(localStorage.getItem("nr-clipboard-pos") || "null"); } catch (_) { /* ignore */ }
+    const place = (x, y) => {
+      const w = modal.offsetWidth || 600, hgt = 60;
+      x = Math.max(-w + 80, Math.min(window.innerWidth - 80, x));
+      y = Math.max(0, Math.min(window.innerHeight - hgt, y));
+      modal.style.left = `${x}px`;
+      modal.style.top = `${y}px`;
+      return { x, y };
+    };
+    let drag = null;
+    bar.addEventListener("pointerdown", e => {
+      if (e.target.closest("button")) return;
+      drag = { dx: e.clientX - modal.offsetLeft, dy: e.clientY - modal.offsetTop };
+      bar.setPointerCapture(e.pointerId);
+      modal.classList.add("dragging");
+    });
+    bar.addEventListener("pointermove", e => { if (drag) pos = place(e.clientX - drag.dx, e.clientY - drag.dy); });
+    const end = () => {
+      if (!drag) return;
+      drag = null;
+      modal.classList.remove("dragging");
+      try { localStorage.setItem("nr-clipboard-pos", JSON.stringify(pos)); } catch (_) { /* ignore */ }
+    };
+    bar.addEventListener("pointerup", end);
+    bar.addEventListener("pointercancel", end);
     document.body.append(modal);
+    modal.style.display = "block";
+    if (pos) place(pos.x, pos.y);
+    else place(Math.max(16, window.innerWidth - modal.offsetWidth - 24), 110);
     setInterval(renderModal, 1000);
   }
-  modal.style.display = "flex";
+  modal.style.display = "block";
   renderModal();
 }
 

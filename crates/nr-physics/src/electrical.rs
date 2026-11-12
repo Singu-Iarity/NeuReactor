@@ -185,7 +185,7 @@ impl Electrical {
             grid_available: true,
             sut_tripped: false,
             uat_tripped: false,
-            sut_rating: 50.0,
+            sut_rating: 80.0,
             uat_rating: 80.0,
             sut_load_mw: 0.0,
             uat_load_mw: 0.0,
@@ -299,8 +299,26 @@ impl Electrical {
             }
         }
 
+        // Fast bus transfer: when the unit auxiliary transformer is lost
+        // (generator trip), protective relaying transfers the 6.9 kV buses
+        // to the startup transformer within cycles, so running motors (RCPs)
+        // ride through.
+        let sut_ok = self.grid_available && self.closed(Breaker::Sut) && !self.sut_tripped;
+        if !(gen_online && !self.uat_tripped) && sut_ok {
+            if self.closed(Breaker::BusAUat) {
+                self.set_breaker(Breaker::BusAUat, false);
+                self.set_breaker(Breaker::BusASut, true);
+                events.push("Fast bus transfer: bus A to startup transformer");
+            }
+            if self.closed(Breaker::BusBUat) {
+                self.set_breaker(Breaker::BusBUat, false);
+                self.set_breaker(Breaker::TieAB, true);
+                events.push("Fast bus transfer: bus B to startup transformer via A-B tie");
+            }
+        }
+
         // Sources.
-        let sut = self.grid_available && self.closed(Breaker::Sut) && !self.sut_tripped;
+        let sut = sut_ok;
         let uat = gen_online && !self.uat_tripped;
         let a_sut = sut && self.closed(Breaker::BusASut);
         let a_uat = uat && self.closed(Breaker::BusAUat);
@@ -338,11 +356,8 @@ impl Electrical {
 
         // Loads per bus.
         let feed_each = FEED_MW * demand.feed.clamp(0.0, 1.0);
-        let mut load_a = BASE_A
-            + feed_each
-            + if demand.vacuum_pumps[0] { VAC_MW } else { 0.0 }
-            + if demand.vacuum_pumps[1] { VAC_MW } else { 0.0 };
-        let mut load_b = BASE_B + feed_each;
+        let mut load_a = BASE_A + feed_each + if demand.vacuum_pumps[0] { VAC_MW } else { 0.0 };
+        let mut load_b = BASE_B + feed_each + if demand.vacuum_pumps[1] { VAC_MW } else { 0.0 };
         for i in 0..4 {
             if demand.rcps[i] {
                 if i < 2 {

@@ -632,3 +632,30 @@ body.bf .mp-win.flash { background: #3a3424; color: #6f6650; box-shadow: none; }
 .size-btn.on { background: #f2b33a; box-shadow: 0 0 6px #f2b33a; }
 .card.warn { outline: 2px solid #c98a12; }
 .sel-row button.unit { box-shadow: inset 0 -2px 0 #3bd16a; }
+
+/* control room lighting (loss of AC / DC power) */
+#mcr-lights { position: fixed; inset: 0; pointer-events: none; z-index: 900; background: #000; opacity: 0; transition: opacity .25s; }
+#mcr-lights.lights-emergency { opacity: .45; background: radial-gradient(ellipse at 50% 0%, rgba(0,0,0,.2), #000 75%); }
+#mcr-lights.lights-battery { opacity: .62; background: radial-gradient(circle at 15% 8%, rgba(0,0,0,.15), #000 40%), radial-gradient(circle at 85% 8%, rgba(0,0,0,.15), #000 40%); }
+#mcr-lights.lights-dark { opacity: .86; }
+#mcr-lights.flicker { animation: mcr-flicker 1.2s steps(1) 1; }
+@keyframes mcr-flicker {
+  0% { opacity: .9; } 8% { opacity: .1; } 14% { opacity: .85; } 22% { opacity: .2; } 30% { opacity: .95; }
+  45% { opacity: .3; } 55% { opacity: .75; } 70% { opacity: .4; } 100% { opacity: inherit; }
+}
+body.dc-lost .ann-win, body.dc-lost .lamp, body.dc-lost .pb.lit, body.dc-lost .fo-win { filter: brightness(.18) saturate(.2); box-shadow: none !important; }
+body.dc-flicker .ann-win, body.dc-flicker .lamp, body.dc-flicker .fo-win { animation: dc-flicker 1.2s steps(1) 1; }
+@keyframes dc-flicker { 0% { filter: brightness(1.6); } 15% { filter: brightness(.1); } 30% { filter: brightness(1.2); } 50% { filter: brightness(.2); } 70% { filter: brightness(.9); } 100% { } }
+
+/* floating, draggable procedure clipboard */
+.proc-float { position: fixed; z-index: 60; width: min(560px, calc(100vw - 32px)); display: none; }
+.proc-float .clipboard-sheet { width: 100%; max-height: 80vh; padding-top: 6px; }
+.proc-float.dragging .clipboard-sheet { box-shadow: 0 18px 40px rgba(0,0,0,.7); }
+.proc-drag { position: relative; height: 30px; margin: -6px -20px 6px; background: #8d6634; cursor: grab; display: flex; align-items: center; justify-content: center; color: #f7f3e6; font: 700 10px sans-serif; letter-spacing: .1em; touch-action: none; user-select: none; }
+.proc-float.dragging .proc-drag { cursor: grabbing; }
+.proc-drag .clip { top: 4px; }
+.proc-x { position: absolute; right: 6px; top: 4px; background: #f7f3e6; border: 1px solid #6b4c22; border-radius: 3px; font: 800 12px sans-serif; padding: 1px 6px; cursor: pointer; }
+.proc-ref p, .proc-ref li { font-size: 12px; line-height: 1.45; }
+.proc-table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
+.proc-table th, .proc-table td { border: 1px solid #a99a72; padding: 2px 8px; text-align: right; }
+.proc-table th { background: #e4dcc5; }

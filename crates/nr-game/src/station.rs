@@ -140,6 +140,44 @@ pub fn parse_request(text: &str) -> Option<Intent> {
     None
 }
 
+/// Energy and money totals.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Ledger {
+    /// Generated energy [MWh].
+    pub gross_mwh: f64,
+    /// Energy sold to the grid [MWh].
+    pub net_mwh: f64,
+    /// Station service energy used [MWh].
+    pub house_mwh: f64,
+    /// Energy bought from the grid while off-line [MWh].
+    pub import_mwh: f64,
+    pub revenue: f64,
+    /// Running costs (fuel, water, imported power, maintenance, staff).
+    pub costs: f64,
+    /// Grid fines and penalties.
+    pub penalties: f64,
+    /// Seconds of operation counted.
+    pub seconds: f64,
+}
+
+impl Ledger {
+    pub fn profit(&self) -> f64 {
+        self.revenue - self.costs - self.penalties
+    }
+}
+
+/// Results of one dispatch instruction (from acceptance until the next).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstructionLedger {
+    pub id: u32,
+    pub target_mwe: f64,
+    pub started_at: f64,
+    pub ended_at: Option<f64>,
+    pub on_target_s: f64,
+    #[serde(flatten)]
+    pub ledger: Ledger,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Call {
@@ -196,6 +234,15 @@ pub struct Station {
     /// charged in career mode.
     #[serde(skip)]
     pub fines: Vec<(f64, String)>,
+    /// All-time energy and money (since the session or career started).
+    #[serde(default)]
+    pub totals: Ledger,
+    /// The dispatch instruction being followed now.
+    #[serde(default)]
+    pub instruction: Option<InstructionLedger>,
+    /// Finished instructions, newest last.
+    #[serde(default)]
+    pub history: Vec<InstructionLedger>,
 }
 
 impl Default for Station {
@@ -228,6 +275,9 @@ impl Station {
             drift_s: 0.0,
             drift_warned: false,
             fines: Vec::new(),
+            totals: Ledger::default(),
+            instruction: None,
+            history: Vec::new(),
         }
     }
 
@@ -282,7 +332,16 @@ impl Station {
         self.pending = Some(req);
     }
 
-    fn commit(&mut self, req: &LoadRequest) {
+    fn commit(&mut self, req: &LoadRequest, t: f64) {
+        self.close_instruction(t);
+        self.instruction = Some(InstructionLedger {
+            id: req.id,
+            target_mwe: req.target_mwe,
+            started_at: t,
+            ended_at: None,
+            on_target_s: 0.0,
+            ledger: Ledger::default(),
+        });
         self.demand_mwe = req.target_mwe;
         self.deadline = Some(req.deadline);
         self.deadline_missed = false;
@@ -291,10 +350,65 @@ impl Station {
         self.drift_warned = false;
     }
 
+    fn close_instruction(&mut self, t: f64) {
+        if let Some(mut done) = self.instruction.take() {
+            done.ended_at = Some(t);
+            self.history.push(done);
+            if self.history.len() > 50 {
+                self.history.remove(0);
+            }
+        }
+    }
+
+    fn fine_pair(&mut self, (amount, why): (f64, String)) {
+        self.fine(amount, why);
+    }
+
+    fn fine(&mut self, amount: f64, why: String) {
+        self.totals.penalties += amount;
+        if let Some(i) = &mut self.instruction {
+            i.ledger.penalties += amount;
+        }
+        self.fines.push((amount, why));
+    }
+
+    /// Book energy, revenue and running costs for `dt` seconds at the
+    /// given power price.
+    pub fn account(&mut self, plant: &Pwr, price_mwh: f64, om_per_day: f64, dt: f64) {
+        let h = dt / 3600.0;
+        let online = plant.tg.breaker;
+        let net = plant.gross_mwe - plant.house_load();
+        let revenue = if online && net > 0.0 {
+            net * price_mwh * self.revenue_multiplier(plant) * h
+        } else {
+            0.0
+        };
+        let costs = crate::hourly_costs(plant, price_mwh, om_per_day).payable() * h;
+        let on_target = online
+            && self.demand_mwe > 0.0
+            && (net - self.demand_mwe).abs() <= 0.03 * rated_net(plant);
+        let book = |l: &mut Ledger| {
+            l.gross_mwh += plant.gross_mwe.max(0.0) * h;
+            l.net_mwh += if online { net.max(0.0) * h } else { 0.0 };
+            l.house_mwh += plant.house_load() * h;
+            l.import_mwh += plant.elec.import_mw * h;
+            l.revenue += revenue;
+            l.costs += costs;
+            l.seconds += dt;
+        };
+        book(&mut self.totals);
+        if let Some(i) = &mut self.instruction {
+            book(&mut i.ledger);
+            if on_target {
+                i.on_target_s += dt;
+            }
+        }
+    }
+
     /// Operator (or AGC) accepts the pending load request.
     pub fn accept(&mut self, t: f64) -> Option<f64> {
         let req = self.pending.take()?;
-        self.commit(&req);
+        self.commit(&req, t);
         self.say(
             t,
             "Control Room",
@@ -501,6 +615,7 @@ impl Station {
             self.pending = None;
             self.deadline = None;
             self.reached = false;
+            self.close_instruction(t);
             self.next_request_at = f64::INFINITY;
         }
         if plant.reactor_tripped && !self.was_tripped {
@@ -551,7 +666,7 @@ impl Station {
             }
             if t > req.deadline {
                 self.pending = None;
-                self.commit(&req);
+                self.commit(&req, t);
                 self.deadline_missed = true;
                 self.say(
                     t,
@@ -562,7 +677,7 @@ impl Station {
                     ),
                     true,
                 );
-                self.fines.push((
+                self.fine_pair((
                     150_000.0,
                     format!(
                         "dispatch instruction ({:.0} MWe) not acknowledged",
@@ -614,7 +729,7 @@ impl Station {
                             ),
                             true,
                         );
-                        self.fines.push((
+                        self.fine_pair((
                             50_000.0 + 500.0 * short,
                             format!("missed dispatch deadline ({:.0} MWe off target)", short),
                         ));
@@ -854,5 +969,28 @@ mod dispatch_tests {
             .iter()
             .any(|m| m.text.contains("Hold this output")));
         assert!(st.fines.is_empty());
+    }
+
+    #[test]
+    fn ledger_books_energy_and_money_per_instruction() {
+        let mut plant = Pwr::full_power();
+        let mut st = Station::new();
+        st.tick(&mut plant, 0.1);
+        let net = plant.gross_mwe - plant.house_load();
+        st.issue(plant.time, net, "Test.");
+        st.accept(plant.time);
+        st.tick(&mut plant, 0.1);
+        st.account(&plant, 45.0, 120_000.0, 3600.0);
+        assert!((st.totals.net_mwh - net).abs() < 1.0);
+        assert!((st.totals.revenue - net * 45.0 * 1.05).abs() < 100.0);
+        assert!(st.totals.costs > 5_000.0);
+        let i = st.instruction.as_ref().unwrap();
+        assert!((i.ledger.revenue - st.totals.revenue).abs() < 1e-6);
+        assert!(i.on_target_s > 3000.0);
+        // A new instruction closes the old one.
+        st.issue(plant.time, 600.0, "Test.");
+        st.accept(plant.time);
+        assert_eq!(st.history.len(), 1);
+        assert_eq!(st.instruction.as_ref().unwrap().ledger.revenue, 0.0);
     }
 }
