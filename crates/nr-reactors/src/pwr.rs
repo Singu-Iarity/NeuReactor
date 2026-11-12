@@ -921,16 +921,14 @@ impl Pwr {
             }
         }
         // Unit loaded: house load from the startup to the unit auxiliary transformer.
-        if uat_ok && self.gross_mwe > 0.15 * self.p.gross_mwe {
-            if e.closed(Breaker::BusASut) {
-                e.set_breaker(Breaker::BusAUat, true);
-                e.set_breaker(Breaker::BusASut, false);
-                e.set_breaker(Breaker::BusBUat, true);
-                e.set_breaker(Breaker::TieAB, false);
-                self.events.push(PlantEvent::info(
-                    "Auto transfer: house load transferred to the unit auxiliary transformer",
-                ));
-            }
+        if uat_ok && self.gross_mwe > 0.15 * self.p.gross_mwe && e.closed(Breaker::BusASut) {
+            e.set_breaker(Breaker::BusAUat, true);
+            e.set_breaker(Breaker::BusASut, false);
+            e.set_breaker(Breaker::BusBUat, true);
+            e.set_breaker(Breaker::TieAB, false);
+            self.events.push(PlantEvent::info(
+                "Auto transfer: house load transferred to the unit auxiliary transformer",
+            ));
         }
     }
 
