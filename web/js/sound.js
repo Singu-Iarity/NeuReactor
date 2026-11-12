@@ -9,9 +9,11 @@
 //   roar, and the source range count-rate speaker.
 
 let ctx = null;
-let master = null, sfxBus = null, ambBus = null, alarmBus = null;
+let master = null, sfxBus = null, ambBus = null, alarmBus = null, callBus = null;
+// Bus one-shot effects play on (call sounds use their own).
+let activeBus = null;
 let volume = 0.7, muted = false;
-const prefs = { ambience: true, alarms: true, effects: true };
+const prefs = { ambience: true, alarms: true, effects: true, calls: true };
 
 function load() {
   try {
@@ -35,6 +37,7 @@ export function unlock() {
     sfxBus = ctx.createGain(); sfxBus.connect(master);
     ambBus = ctx.createGain(); ambBus.connect(master);
     alarmBus = ctx.createGain(); alarmBus.connect(master);
+    callBus = ctx.createGain(); callBus.connect(master);
     applyLevels();
   }
   if (ctx.state === "suspended") ctx.resume();
@@ -50,6 +53,7 @@ function applyLevels() {
   sfxBus.gain.setTargetAtTime(prefs.effects ? 1 : 0, t, 0.05);
   ambBus.gain.setTargetAtTime(prefs.ambience ? 1 : 0, t, 0.3);
   alarmBus.gain.setTargetAtTime(prefs.alarms ? 1 : 0, t, 0.05);
+  callBus.gain.setTargetAtTime(prefs.calls ? 1 : 0, t, 0.05);
 }
 
 export const settings = {
@@ -83,7 +87,7 @@ function env(gainNode, t, attack, peak, decay) {
 }
 
 /** Filtered noise burst. */
-function burst(t, { freq = 2000, q = 1, type = "bandpass", peak = 0.5, attack = 0.002, decay = 0.05, bus = sfxBus } = {}) {
+function burst(t, { freq = 2000, q = 1, type = "bandpass", peak = 0.5, attack = 0.002, decay = 0.05, bus = activeBus || sfxBus } = {}) {
   const n = noise(), f = ctx.createBiquadFilter(), g = ctx.createGain();
   f.type = type; f.frequency.value = freq; f.Q.value = q;
   n.connect(f).connect(g).connect(bus);
@@ -92,7 +96,7 @@ function burst(t, { freq = 2000, q = 1, type = "bandpass", peak = 0.5, attack = 
 }
 
 /** Pitched thump / tone. */
-function tone(t, { freq = 120, to = null, type = "sine", peak = 0.4, attack = 0.003, decay = 0.12, bus = sfxBus } = {}) {
+function tone(t, { freq = 120, to = null, type = "sine", peak = 0.4, attack = 0.003, decay = 0.12, bus = activeBus || sfxBus } = {}) {
   const o = ctx.createOscillator(), g = ctx.createGain();
   o.type = type; o.frequency.setValueAtTime(freq, t);
   if (to) o.frequency.exponentialRampToValueAtTime(to, t + attack + decay);
@@ -200,9 +204,11 @@ const EFFECTS = {
 };
 
 /** Play a one-shot effect by name. */
+const CALL_SOUNDS = new Set(["phone", "pickup"]);
 export function play(name, delay = 0) {
   if (!unlock() || !EFFECTS[name]) return;
-  EFFECTS[name](ctx.currentTime + delay + 0.005);
+  activeBus = CALL_SOUNDS.has(name) ? callBus : sfxBus;
+  try { EFFECTS[name](ctx.currentTime + delay + 0.005); } finally { activeBus = null; }
 }
 
 // -------------------------------------------------------- alarm signals

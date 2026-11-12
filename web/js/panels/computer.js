@@ -76,7 +76,8 @@ export function build(root, ctx) {
   const repair = pushbutton("REPAIR GENERATOR", { onPress: () => ctx.send({ type: "repair_generator" }) });
   const lampBtn = pushbutton("LAMPS: GREEN = ON", { onPress: () => settings.set("lamps", settings.get("lamps") === "green_on" ? "us" : "green_on") });
   const shakeBtn = pushbutton("SCREEN SHAKE", { onPress: () => settings.set("shake", !settings.get("shake")) });
-  const sndBtns = ["ambience", "alarms", "effects"].map(k => pushbutton(`${k.toUpperCase()} SOUND`, {
+  const SND = [["ambience", "AMBIENCE SOUND"], ["alarms", "ALARMS SOUND"], ["effects", "EFFECTS SOUND"], ["calls", "ALERT / CALL SOUND"]];
+  const sndBtns = SND.map(([k, label]) => pushbutton(label, {
     onPress: () => { sound.unlock(); sound.settings.setPref(k, !sound.settings.prefs[k]); },
   }));
 
@@ -92,6 +93,7 @@ export function build(root, ctx) {
       plate("DISPLAY", "small"), h("div", { class: "row tight" }, lampBtn.el, shakeBtn.el),
       h("p", { class: "note" }, "Lamp convention: US plants use red = running/closed and green = stopped/open. Light the button to use green = running instead."),
       plate("SOUND", "small"), h("div", { class: "row tight" }, ...sndBtns.map(b => b.el)),
+      h("p", { class: "note" }, "ALERT / CALL SOUND is the phone ring for incoming messages and grid requests (and the pick-up click). Turn the other three off to hear only message alerts."),
       plate("PLUGINS", "small"), plugins)));
 
   plugins.addEventListener("click", async e => {
@@ -136,7 +138,7 @@ export function build(root, ctx) {
     training.update(t.training_mode);
     lampBtn.update(settings.get("lamps") === "green_on");
     shakeBtn.update(settings.get("shake"));
-    ["ambience", "alarms", "effects"].forEach((k, i) => sndBtns[i].update(sound.settings.prefs[k]));
+    SND.forEach(([k], i) => sndBtns[i].update(sound.settings.prefs[k] !== false));
     repair.update(false, t.readings.generator_health_pct >= 100);
     if (t.game_mode === "career") [hs, fp, analog, digital, training, repair].forEach(b => b.update(false, true));
   };
