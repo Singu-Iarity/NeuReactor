@@ -511,3 +511,118 @@ fn pumps_on_a_dead_bus_cannot_start() {
         .is_err());
     assert!(p.rcp_running[0], "bus A pumps keep running");
 }
+
+#[test]
+fn annunciators_black_out_until_diesels_pick_up_unless_ups() {
+    use nr_api::UpgradeId;
+    let mut p = Pwr::hot_standby();
+    p.automation.upgrades.remove(&UpgradeId::VitalUps);
+    op(
+        &mut p,
+        Command::SetModuleMode {
+            module: ModuleId::DieselSequencer,
+            mode: ModuleMode::Auto,
+        },
+    );
+    op(&mut p, Command::SetOffsitePower { available: false });
+    p.advance(2.0);
+    assert!(
+        !p.indication_power(),
+        "panels dark on loss of AC without UPS"
+    );
+    p.advance(60.0);
+    assert!(
+        p.indication_power(),
+        "back on once a diesel picks up a safety bus"
+    );
+
+    let mut q = Pwr::hot_standby();
+    assert!(q.automation.upgrades.contains(&UpgradeId::VitalUps));
+    op(&mut q, Command::SetOffsitePower { available: false });
+    q.advance(2.0);
+    assert!(q.indication_power(), "UPS inverters keep the panels lit");
+}
+
+#[test]
+fn better_batteries_last_longer() {
+    use nr_api::{Era, Slot, Tier};
+    let run = |era, tier| {
+        let mut p = Pwr::hot_standby();
+        op(
+            &mut p,
+            Command::SetComponent {
+                slot: Slot::StationBatteries,
+                era,
+                tier,
+                size: None,
+            },
+        );
+        op(&mut p, Command::SetOffsitePower { available: false });
+        p.advance(3.0 * 3600.0);
+        p.elec.buses.dc
+    };
+    assert!(!run(Era::Vintage, Tier::Basic), "vintage basic: ~1.2 h");
+    assert!(run(Era::Modern, Tier::Premium), "modern premium: ~5.6 h");
+}
+
+#[test]
+fn bus_transfer_module_restores_offsite_and_moves_to_uat() {
+    let mut p = Pwr::hot_standby();
+    for m in [ModuleId::DieselSequencer, ModuleId::BusTransfer] {
+        op(
+            &mut p,
+            Command::SetModuleMode {
+                module: m,
+                mode: ModuleMode::Auto,
+            },
+        );
+    }
+    op(&mut p, Command::SetOffsitePower { available: false });
+    p.advance(60.0);
+    assert!(
+        p.elec.buses.safety1 && p.elec.diesels[0].running(),
+        "on diesels"
+    );
+    op(&mut p, Command::SetOffsitePower { available: true });
+    p.advance(30.0);
+    assert!(p.elec.buses.bus_a && p.elec.buses.bus_b, "6.9 kV restored");
+    assert!(
+        p.elec.closed(nr_physics::Breaker::Safety1Feed)
+            && !p.elec.closed(nr_physics::Breaker::Edg1),
+        "safety bus back on its normal feed"
+    );
+    assert!(!p.elec.diesels[0].running(), "diesel stopped");
+
+    // Loaded unit on the SUT: the module moves house load to the UAT.
+    let mut f = Pwr::full_power();
+    for (b, c) in [
+        ("bus_a_sut", true),
+        ("bus_a_uat", false),
+        ("tie_a_b", true),
+        ("bus_b_uat", false),
+    ] {
+        op(
+            &mut f,
+            Command::SetElecBreaker {
+                breaker: b.into(),
+                closed: c,
+            },
+        );
+    }
+    f.advance(5.0);
+    assert!(f.elec.sut_load_mw > 10.0);
+    op(
+        &mut f,
+        Command::SetModuleMode {
+            module: ModuleId::BusTransfer,
+            mode: ModuleMode::Auto,
+        },
+    );
+    f.advance(5.0);
+    assert!(f.elec.closed(nr_physics::Breaker::BusAUat));
+    assert!(
+        f.elec.sut_load_mw < 1.0,
+        "SUT unloaded: {}",
+        f.elec.sut_load_mw
+    );
+}

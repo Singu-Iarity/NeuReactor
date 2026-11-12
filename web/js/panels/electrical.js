@@ -19,7 +19,8 @@ export const cols = 6;
 export const windows = [
   ["loop", "LOSS OF OFFSITE POWER"], ["sut_trip", "STARTUP XFMR TRIP / LOCKOUT"], ["sut_overload", "STARTUP XFMR OVERLOAD"], ["uat_trip", "UNIT AUX XFMR TRIP / LOCKOUT"], ["uat_overload", "UNIT AUX XFMR OVERLOAD"], ["importing", "IMPORTING GRID POWER"],
   ["bus_a_dead", "6.9 kV BUS A DE-ENERGISED"], ["bus_b_dead", "6.9 kV BUS B DE-ENERGISED"], ["s1_uv", "SAFETY BUS 1 UNDERVOLTAGE"], ["s2_uv", "SAFETY BUS 2 UNDERVOLTAGE"], ["tie_closed", "BUS A-B TIE CLOSED"], ["batt_discharge", "BATTERY DISCHARGING"],
-  ["edg1_run", "EDG 1 RUNNING"], ["edg2_run", "EDG 2 RUNNING"], ["edg1_fuel", "EDG 1 FUEL LOW"], ["edg2_fuel", "EDG 2 FUEL LOW"], ["dc_low", "125 V DC BUS LOW VOLTAGE"], ["", ""],
+  ["edg1_run", "EDG 1 RUNNING"], ["edg2_run", "EDG 2 RUNNING"], ["edg1_fuel", "EDG 1 FUEL LOW"], ["edg2_fuel", "EDG 2 FUEL LOW"], ["dc_low", "125 V DC BUS LOW VOLTAGE"], ["batt_low", "STATION BATTERY LOW"],
+  ["abt_auto", "AUTO BUS TRANSFER IN SERVICE"], ["ups_battery", "VITAL BUS ON UPS / BATTERY"], ["", ""], ["", ""], ["", ""], ["", ""],
 ];
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -167,6 +168,10 @@ export function build(root, ctx) {
     return { run, ready, fuel, load, el: h("div", { class: "col" }, run.el, ready.el, fuel.el, load.el) };
   });
   const seq = maStation("DIESEL LOAD SEQUENCER", { module: "diesel_sequencer", pvTag: "edg_load_mw", digits: 2 }, ctx);
+  const abt = maStation("AUTO BUS TRANSFER", { module: "bus_transfer", pvTag: "house_load_mw", digits: 1 }, ctx);
+  const battCap = readout("BATTERY CAPACITY [h]", { digits: 1 });
+  const battLeft = readout("TIME ON BATTERY LEFT [h]", { format: v => (v === null ? "—" : v.toFixed(1)) });
+  const indLamp = lamp("white", "VITAL BUS / ANNUNCIATOR POWER");
   const fuelBtn = pushbutton("ORDER DIESEL FUEL", {
     onPress: async () => {
       const t = ctx.t();
@@ -199,13 +204,15 @@ export function build(root, ctx) {
         h("div", { class: "col" }, house.el, imp.el, reset.el, loop.el)),
       h("p", { class: "note" }, "Bus A can be fed from the startup transformer; bus B only from the unit auxiliary transformer (generator on-line) or through the A-B tie. Starting several large motors at once can overload the startup transformer. Click a breaker on the mimic or use its control switch."),
       plate("BUS VOLTMETERS", "small"),
-      h("div", { class: "row" }, ...busV.map(b => b.m.el)),
+      h("div", { class: "row" }, ...busV.map(b => b.m.el), abt.el),
+      h("p", { class: "note" }, "Fast bus transfer to the startup transformer on a generator trip is built-in protective relaying. The Auto Bus Transfer module adds recovery: re-energise the buses when offsite power returns, put the safety buses back on their normal feeds (stopping the diesels), and move house load to the unit auxiliary transformer once the unit is above 15 % load."),
       plate("BREAKER CONTROL SWITCHES", "small"),
       h("div", { class: "row tight wrap" }, ...brkSw.map(([, sw]) => sw.el))),
     h("section", { class: "sect", "data-section": "electrical.diesels" }, plate("EMERGENCY DIESEL GENERATORS"),
       h("div", { class: "row" }, edg[0].el, edg[1].el, h("div", { class: "col" }, seq.el, fuelBtn.el))),
     h("section", { class: "sect", "data-section": "electrical.dc" }, plate("125 V DC & BATTERY"),
-      h("div", { class: "row" }, batt.el, dcV.el, h("div", { class: "col" }, charger.el, dcOk.el)))));
+      h("div", { class: "row" }, batt.el, dcV.el, h("div", { class: "col" }, charger.el, dcOk.el, indLamp.el, battCap.el, battLeft.el)),
+      h("p", { class: "note" }, "Annunciators and indicating lamps run from the vital instrument bus. Without Vital AC UPS inverters it is fed from the safety buses and goes dark on a loss of AC until a diesel picks up; with them it rides through on the battery. Better batteries (Career shop) last longer."))));
 
   return (t, visible) => {
     const e = t.electrical;
@@ -229,6 +236,11 @@ export function build(root, ctx) {
       x.load.update(d.load_mw);
     });
     seq.update(t);
+    abt.update(t);
+    battCap.update(e.battery_hours ?? 2);
+    const discharging = !e.buses.safety1 && !e.buses.safety2;
+    battLeft.update(discharging ? (e.battery_pct / 100) * (e.battery_hours ?? 2) : null);
+    indLamp.update(t.indication_power !== false);
     const full = e.diesels.every(d => d.fuel_l >= d.fuel_capacity_l - 1);
     fuelBtn.update(false, full);
     batt.update(e.battery_pct);

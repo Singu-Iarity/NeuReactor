@@ -194,6 +194,15 @@ has its own annunciator. ACK/SIL/RST acknowledge, silence and reset alarms.
 - Steam generators, turbine/generator, steam dumps, relief valves, feedwater heating
 - Condenser (CW pumps, hogging vacuum pumps, SJAEs, hotwell), deaerator, MSIVs
 - Turbine vibration with rotor critical speeds (and optional screen shake)
+- Electrical automation and backup: fast bus transfer to the startup
+  transformer on a generator trip (built-in); Auto Bus Transfer & Load
+  Restoration module (restore buses on offsite return, safety buses back
+  from the diesels, house load to the UAT at load); diesel load sequencer
+  sheds and loads the safety buses; tiered station batteries (about
+  1.2 to 5.6 h); annunciators on a vital bus that blacks out until a
+  diesel picks up, or rides through on Vital AC UPS inverters
+- MCR lighting dims and flickers with loss of normal / emergency / DC
+  lighting
 - Station electrical: startup transformer (grid) and unit auxiliary
   transformer (generator), 6.9 kV buses A/B with tie, 4.16 kV safety buses,
   two emergency diesels with load sequencer and fuel, 125 V DC with battery.

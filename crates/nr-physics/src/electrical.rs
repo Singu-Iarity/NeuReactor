@@ -133,6 +133,13 @@ pub struct Electrical {
     /// Plant size relative to the 1150 MWe reference (scales motor loads).
     #[serde(default = "one")]
     pub scale: f64,
+    /// Battery capacity with no chargers [hours].
+    #[serde(default = "two")]
+    pub battery_hours: f64,
+}
+
+fn two() -> f64 {
+    2.0
 }
 
 fn one() -> f64 {
@@ -209,6 +216,7 @@ impl Electrical {
             transformer_quality: 1.0,
             diesel_quality: 1.0,
             scale: 1.0,
+            battery_hours: 2.0,
         }
     }
 
@@ -344,8 +352,8 @@ impl Electrical {
         if charger {
             self.battery_pct = (self.battery_pct + 0.02 * dt).min(100.0);
         } else {
-            // About 2 hours of battery.
-            self.battery_pct = (self.battery_pct - 100.0 / 7200.0 * dt).max(0.0);
+            self.battery_pct =
+                (self.battery_pct - 100.0 / (3600.0 * self.battery_hours.max(0.1)) * dt).max(0.0);
         }
         self.dc_volts = if charger {
             132.0

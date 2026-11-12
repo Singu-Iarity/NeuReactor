@@ -871,6 +871,77 @@ impl Pwr {
         }
     }
 
+    /// Automatic bus transfer & load restoration (module in AUTO).
+    fn auto_bus_transfer(&mut self) {
+        let e = &mut self.elec;
+        let offsite = e.grid_available && !e.sut_tripped;
+        let uat_ok = self.tg.breaker && !e.uat_tripped;
+        // Offsite power back: re-energise the 6.9 kV buses from the SUT.
+        if offsite {
+            if !e.closed(Breaker::Sut) {
+                e.set_breaker(Breaker::Sut, true);
+                self.events.push(PlantEvent::info(
+                    "Auto transfer: startup transformer energised",
+                ));
+            }
+            let a_fed = e.closed(Breaker::BusASut) || (uat_ok && e.closed(Breaker::BusAUat));
+            if !a_fed {
+                e.set_breaker(Breaker::BusAUat, false);
+                e.set_breaker(Breaker::BusASut, true);
+                self.events.push(PlantEvent::info(
+                    "Auto transfer: bus A restored from startup transformer",
+                ));
+            }
+            let b_fed = e.closed(Breaker::TieAB) || (uat_ok && e.closed(Breaker::BusBUat));
+            if !b_fed {
+                e.set_breaker(Breaker::BusBUat, false);
+                e.set_breaker(Breaker::TieAB, true);
+                self.events.push(PlantEvent::info(
+                    "Auto transfer: bus B restored through the A-B tie",
+                ));
+            }
+        }
+        // Safety buses back to their normal feeds; diesels unloaded and stopped.
+        let (bus_a, bus_b) = (e.buses.bus_a, e.buses.bus_b);
+        for (feed, edg, live, i) in [
+            (Breaker::Safety1Feed, Breaker::Edg1, bus_a, 0),
+            (Breaker::Safety2Feed, Breaker::Edg2, bus_b, 1),
+        ] {
+            if live && (!e.closed(feed) || e.closed(edg)) {
+                if e.closed(edg) {
+                    e.set_breaker(edg, false);
+                    e.stop_diesel(i);
+                }
+                e.set_breaker(feed, true);
+                self.events.push(PlantEvent::info(if i == 0 {
+                    "Auto transfer: safety bus 1 back on normal feed"
+                } else {
+                    "Auto transfer: safety bus 2 back on normal feed"
+                }));
+            }
+        }
+        // Unit loaded: house load from the startup to the unit auxiliary transformer.
+        if uat_ok && self.gross_mwe > 0.15 * self.p.gross_mwe {
+            if e.closed(Breaker::BusASut) {
+                e.set_breaker(Breaker::BusAUat, true);
+                e.set_breaker(Breaker::BusASut, false);
+                e.set_breaker(Breaker::BusBUat, true);
+                e.set_breaker(Breaker::TieAB, false);
+                self.events.push(PlantEvent::info(
+                    "Auto transfer: house load transferred to the unit auxiliary transformer",
+                ));
+            }
+        }
+    }
+
+    /// Annunciators and indicating lamps: vital instrument bus, fed from
+    /// the safety buses, or from the battery through UPS inverters.
+    pub fn indication_power(&self) -> bool {
+        let b = &self.elec.buses;
+        let ups = self.automation.upgrades.contains(&UpgradeId::VitalUps);
+        b.dc && (ups || b.safety1 || b.safety2)
+    }
+
     /// Is 6.9 kV bus A (false) or B (true) energised?
     fn bus_live(&self, bus_b: bool) -> bool {
         if bus_b {
@@ -937,6 +1008,14 @@ impl Pwr {
                     self.elec.start_diesel(i);
                 }
                 if !bus_live && self.elec.diesels[i].running() && !self.elec.closed(br) {
+                    // Shed the bus from its dead normal feed before loading
+                    // the diesel onto it.
+                    let feed = if i == 0 {
+                        Breaker::Safety1Feed
+                    } else {
+                        Breaker::Safety2Feed
+                    };
+                    self.elec.set_breaker(feed, false);
                     self.elec.set_breaker(br, true);
                 }
             }
@@ -957,6 +1036,19 @@ impl Pwr {
             }
         } else {
             self.reverse_power_s = 0.0;
+        }
+        if let Some(c) = self
+            .automation
+            .equipment
+            .components
+            .get(&Slot::StationBatteries)
+        {
+            self.elec.battery_hours = nr_api::equipment::battery_hours(c);
+        }
+        if self.automation.mode(ModuleId::BusTransfer) == ModuleMode::Auto
+            && self.module_usable(ModuleId::BusTransfer)
+        {
+            self.auto_bus_transfer();
         }
         let demand = self.load_demand();
         let events = self.elec.step(&demand, self.tg.breaker, dt);
@@ -3109,6 +3201,19 @@ impl Pwr {
         if e.import_mw > 0.5 {
             add(el, "importing", "IMPORTING GRID POWER", I);
         }
+        if mode(ModuleId::BusTransfer) == ModuleMode::Auto {
+            add(el, "abt_auto", "AUTO BUS TRANSFER IN SERVICE", I);
+        }
+        if !e.buses.safety1
+            && !e.buses.safety2
+            && e.buses.dc
+            && self.automation.upgrades.contains(&UpgradeId::VitalUps)
+        {
+            add(el, "ups_battery", "VITAL BUS ON UPS / BATTERY", W);
+        }
+        if e.battery_pct < 25.0 {
+            add(el, "batt_low", "STATION BATTERY LOW", A);
+        }
 
         // ----------------------------------------------- plant computer
         let pc = "computer";
@@ -3196,6 +3301,7 @@ impl Pwr {
             msiv_open: self.msiv_open,
             condenser_available: self.condenser.available(),
             turbine_hall_ready: self.turbine_hall_ready,
+            indication_power: self.indication_power(),
             electrical: serde_json::to_value(&self.elec).unwrap_or_default(),
             grid_permission: self.grid_permission,
             generator_lockout: self.tg.lockout,

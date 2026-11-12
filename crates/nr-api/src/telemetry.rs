@@ -116,6 +116,9 @@ pub struct Telemetry {
     pub condenser_available: bool,
     /// Turbine hall local checks complete (comms).
     pub turbine_hall_ready: bool,
+    /// Annunciators / indicating lamps powered (vital instrument bus).
+    #[serde(default = "yes")]
+    pub indication_power: bool,
     /// Electrical distribution: breakers, buses, transformers, diesels, DC.
     pub electrical: serde_json::Value,
     /// Grid dispatch permission to synchronise (comms).
@@ -143,4 +146,8 @@ pub struct Telemetry {
     pub trips: Vec<String>,
     pub alarms: Vec<Alarm>,
     pub modules: Vec<ModuleView>,
+}
+
+fn yes() -> bool {
+    true
 }

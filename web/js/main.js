@@ -174,8 +174,9 @@ let lightLevel = "normal", lightTimer = null;
 function updateLighting(t) {
   const b = t.electrical?.buses;
   if (!b) return;
-  // Annunciators and indicating lamps run on 125 V DC.
-  const dcLost = !b.dc;
+  // Annunciators and indicating lamps run from the vital instrument bus
+  // (safety buses, or the battery through UPS inverters).
+  const dcLost = t.indication_power === false;
   if (document.body.classList.contains("dc-lost") !== dcLost) {
     document.body.classList.toggle("dc-lost", dcLost);
     document.body.classList.add("dc-flicker");

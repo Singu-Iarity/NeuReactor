@@ -137,6 +137,8 @@ pub enum Slot {
     SteamIsolation,
     StationTransformers,
     EmergencyDiesels,
+    /// 125 V DC station batteries and chargers.
+    StationBatteries,
 }
 
 pub struct SlotInfo {
@@ -150,6 +152,13 @@ pub struct SlotInfo {
 }
 
 pub const SLOTS: &[SlotInfo] = &[
+    SlotInfo {
+        slot: Slot::StationBatteries,
+        name: "Station Batteries & Chargers (125 V DC)",
+        base_price: 8e6,
+        year_offset: 2,
+        effect: "Hours of DC (control power, emergency lights, vital instruments) with no AC",
+    },
     SlotInfo {
         slot: Slot::ReactorCore,
         name: "Reactor Core, Vessel Internals & Fuel",
@@ -271,7 +280,14 @@ pub fn slot_info(s: Slot) -> &'static SlotInfo {
 /// Is this slot's equipment sized to the unit (everything but the board
 /// instruments)?
 pub fn slot_is_sized(s: Slot) -> bool {
-    s != Slot::BoardInstruments
+    !matches!(s, Slot::BoardInstruments | Slot::StationBatteries)
+}
+
+/// Battery capacity [hours] of a station battery component.
+pub fn battery_hours(c: &Component) -> f64 {
+    let era = [1.5, 2.5, 4.0][c.era as usize];
+    let tier = [0.8, 1.0, 1.4][c.tier as usize];
+    era * tier
 }
 
 /// Components whose capacity limits the unit's output when undersized.
@@ -414,6 +430,7 @@ pub fn upgrade_year(u: UpgradeId) -> i32 {
     match u {
         U::PlantProcessComputer => 1980,
         U::RodGroupSelect => 1966,
+        U::VitalUps => 1976,
         U::DigitalCondenserControls => 1993,
         U::GridDispatchLink => 1998,
         U::DigitalElectricalControls => 1991,
@@ -446,6 +463,7 @@ pub fn module_component(m: ModuleId) -> Option<Slot> {
         M::SteamDump => Some(Slot::Condenser),
         M::ReactorPower => Some(Slot::RodDrives),
         M::DieselSequencer => Some(Slot::EmergencyDiesels),
+        M::BusTransfer => Some(Slot::StationTransformers),
         M::TurbineGovernor => Some(Slot::Turbine),
         M::GeneratorSync | M::Excitation => Some(Slot::Generator),
         _ => None,

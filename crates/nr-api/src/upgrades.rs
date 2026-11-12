@@ -38,6 +38,7 @@ pub enum UpgradeId {
     MessageTerminal,
     MessagingHmi,
     CoreExitThermocoupleMap,
+    VitalUps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +181,7 @@ pub const CATALOG: &[UpgradeInfo] = &[
     MESSAGE_TERMINAL,
     MESSAGING_HMI,
     CORE_EXIT_TC_MAP,
+    VITAL_UPS,
 ];
 
 /// Board hardware entries appended to the catalog.
@@ -251,6 +253,16 @@ pub const CORE_EXIT_TC_MAP: UpgradeInfo = UpgradeInfo {
     name: "Core Exit Thermocouple Map",
     description: "Individual core exit thermocouple readout for every fuel assembly, shown on the core map. Without it only averages (core, quadrant, rod bank) are indicated.",
     price: 450_000,
+    sections: &[],
+};
+
+pub const VITAL_UPS: UpgradeInfo = UpgradeInfo {
+    id: U::VitalUps,
+    kind: UpgradeKind::BoardHardware,
+    computer: None,
+    name: "Vital AC UPS Inverters",
+    description: "Static inverters feed the annunciators, indicating lamps and vital instruments from the station battery, so they stay lit through a loss of AC. Without them the panels go dark until a safety bus is re-energised.",
+    price: 650_000,
     sections: &[],
 };
 
