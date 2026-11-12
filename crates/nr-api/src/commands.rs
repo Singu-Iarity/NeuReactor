@@ -231,6 +231,10 @@ pub enum Command {
         slot: crate::equipment::Slot,
         era: crate::equipment::Era,
         tier: crate::equipment::Tier,
+        /// Size class; keeps the current size when omitted. The reactor
+        /// core's size is changed with `load_scenario` + `size`.
+        #[serde(default)]
+        size: Option<crate::equipment::UnitSize>,
     },
     /// Choose how an automation module is implemented (sandbox).
     SetModuleController {
@@ -248,6 +252,9 @@ pub enum Command {
     /// `"hot_standby"` or `"full_power"`.
     LoadScenario {
         name: String,
+        /// Unit size to build (keeps the current size when omitted).
+        #[serde(default)]
+        size: Option<crate::equipment::UnitSize>,
     },
 }
 

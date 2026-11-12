@@ -831,6 +831,7 @@ impl Pwr {
         self.read_instruments(dt);
         self.update_nis_permissives();
         self.run_automation(dt);
+        self.apply_output_limit();
         self.run_protection();
         self.pzr_low_level_interlock();
         self.step_electrical(dt);
@@ -993,6 +994,15 @@ impl Pwr {
         if self.reactor_tripped {
             for b in &mut self.banks {
                 b.drop(self.p.scram_time, dt);
+            }
+            return;
+        }
+        // Rod drive power cabinets sized for a smaller core cannot step the
+        // extra rods: no rod motion (the rods still scram by gravity).
+        if self.rod_drives_undersized() {
+            self.rod_direction = RodDirection::Hold;
+            for b in &mut self.banks {
+                b.target = b.position;
             }
             return;
         }
@@ -1275,7 +1285,7 @@ impl Pwr {
         // Core exit thermocouples: average, hottest, by quadrant and by the
         // assemblies under each rod bank.
         let cet = self.core_exit_temps();
-        let core = crate::core_map::core();
+        let core = crate::core_map::core(self.size());
         let avg = |f: &dyn Fn(&crate::core_map::Assembly) -> bool| {
             let v: Vec<f64> = core
                 .iter()
@@ -1400,7 +1410,7 @@ impl Pwr {
 
     /// True core exit temperature of every assembly (row-major) [°C].
     pub fn core_exit_temps(&self) -> Vec<f64> {
-        let core = crate::core_map::core();
+        let core = crate::core_map::core(self.size());
         let power = crate::core_map::assembly_power(core, &self.banks, self.quadrant_tilt());
         crate::core_map::exit_temps(core, &power, self.t_cold, self.t_hot)
     }
@@ -1821,8 +1831,42 @@ impl Pwr {
         self.trip_turbine();
     }
 
+    /// Rod drive mechanisms / power cabinets too small for the core.
+    pub fn rod_drives_undersized(&self) -> bool {
+        self.automation.equipment.size_ratio(Slot::RodDrives) < 1.0
+    }
+
+    /// Output limit from undersized plant components: (fraction, slot).
+    pub fn output_limit(&self) -> (f64, Option<Slot>) {
+        self.automation.equipment.output_limit()
+    }
+
+    /// Undersized turbine-side equipment caps steam flow to the turbine.
+    fn apply_output_limit(&mut self) {
+        let (limit, _) = self.output_limit();
+        if limit < 1.0 {
+            // Cap steam flow (not just valve position: throttling raises
+            // steam pressure) at the limit of the smallest component.
+            let ps = self.steam_pressure().max(1.0e5);
+            let vmax = limit * self.steam_nominal() / (self.turbine_cv() * ps);
+            if self.turbine_valve > vmax {
+                self.turbine_valve = vmax;
+            }
+            let cap = limit * self.p.gross_mwe;
+            for m in [ModuleId::TurbineGovernor, ModuleId::PlantMaster] {
+                if self.automation.setpoint(m, "target_mwe").unwrap_or(0.0) > cap {
+                    self.automation.setpoint_set(m, "target_mwe", cap);
+                }
+            }
+        }
+    }
+
     fn module_usable(&self, m: ModuleId) -> bool {
         if !self.automation.owned.contains(&m) {
+            return false;
+        }
+        // Computers and automation must be scaled for the installed core.
+        if !self.automation.equipment.ic_matches() {
             return false;
         }
         match self.automation.equipment.controllers.get(&m) {
@@ -1950,6 +1994,13 @@ impl Pwr {
                     return deny("ROD WITHDRAWAL BLOCKED: withdraw shutdown banks SA and SB fully (228 steps) first");
                 }
                 b.target = clamp(*target, 0.0, b.max_steps);
+            }
+            Command::RodMotion {
+                selection,
+                direction,
+            } if self.rod_drives_undersized() && *direction != RodDirection::Hold => {
+                let _ = selection;
+                return deny("rod drive power cabinets are sized for a smaller core and cannot step this core's rods: install rod drives for the core size");
             }
             Command::RodMotion {
                 selection,
@@ -2237,16 +2288,33 @@ impl Pwr {
             Command::SetUpgradeInstalled { upgrade, installed } => {
                 self.set_upgrade(*upgrade, *installed)
             }
-            Command::SetComponent { slot, era, tier } => {
+            Command::SetComponent {
+                slot,
+                era,
+                tier,
+                size,
+            } => {
+                let current = self
+                    .automation
+                    .equipment
+                    .components
+                    .get(slot)
+                    .map(|c| c.size)
+                    .unwrap_or(self.size());
+                let size = size.unwrap_or(current);
+                if *slot == Slot::ReactorCore && size != self.size() {
+                    return deny("the core size sets the whole plant: change unit size with LOAD SCENARIO and a size");
+                }
                 self.automation
                     .equipment
                     .components
-                    .insert(*slot, nr_api::Component::new(*era, *tier));
+                    .insert(*slot, nr_api::Component::sized(*era, *tier, size));
                 self.events.push(PlantEvent::info(&format!(
-                    "{} replaced: {:?} {:?}",
+                    "{} replaced: {:?} {:?} {}",
                     nr_api::equipment::slot_info(*slot).name,
                     era,
-                    tier
+                    tier,
+                    size.label()
                 )));
                 self.sandbox_fit_kits();
             }
@@ -2269,8 +2337,9 @@ impl Pwr {
             Command::SetModuleInstalled { module, installed } => {
                 self.set_module_installed(*module, *installed)
             }
-            Command::LoadScenario { name } => {
-                let Some(mut fresh) = Self::from_scenario(name) else {
+            Command::LoadScenario { name, size } => {
+                let size = size.unwrap_or(self.size());
+                let Some(mut fresh) = Self::from_scenario_sized(name, size) else {
                     return deny("scenario must be hot_standby or full_power");
                 };
                 fresh.automation.game_mode = self.automation.game_mode;
@@ -2281,9 +2350,10 @@ impl Pwr {
                         fresh.automation.modes.insert(m, ModuleMode::Manual);
                     }
                 }
-                fresh
-                    .events
-                    .push(PlantEvent::info(&format!("Scenario loaded: {name}")));
+                fresh.events.push(PlantEvent::info(&format!(
+                    "Scenario loaded: {name} ({})",
+                    size.label()
+                )));
                 *self = fresh;
             }
         }
@@ -2924,6 +2994,35 @@ impl Pwr {
 
         // ----------------------------------------------- plant computer
         let pc = "computer";
+        let (limit, by) = self.output_limit();
+        if let Some(slot) = by {
+            add(
+                "turbine",
+                "derated",
+                &format!(
+                    "UNIT DERATED {:.0} %: {} UNDERSIZED",
+                    limit * 100.0,
+                    nr_api::equipment::slot_info(slot).name.to_uppercase()
+                ),
+                W,
+            );
+        }
+        if self.rod_drives_undersized() {
+            add(
+                "reactor",
+                "crdm_size",
+                "ROD DRIVES UNDERSIZED FOR CORE: ROD MOTION BLOCKED",
+                A,
+            );
+        }
+        if !self.automation.equipment.ic_matches() {
+            add(
+                pc,
+                "ic_scale",
+                "I&C NOT SCALED FOR CORE SIZE: AUTOMATION OFF",
+                A,
+            );
+        }
         if self.training_mode {
             add(pc, "training", "TRAINING MODE: RPS BYPASSED", I);
         }
@@ -2940,7 +3039,10 @@ impl Pwr {
         Telemetry {
             api_version: API_VERSION,
             unit: self.name.clone(),
-            reactor_type: "PWR-1150 (4-loop)".into(),
+            reactor_type: format!("PWR-{:.0}", self.size().mwe()),
+            unit_size: self.size(),
+            rated_gross_mwe: self.p.gross_mwe,
+            rated_thermal_mw: self.p.thermal_power / 1e6,
             game_mode: self.automation.game_mode,
             sim_time: self.time,
             time_scale,

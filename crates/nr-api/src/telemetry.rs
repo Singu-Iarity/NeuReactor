@@ -84,6 +84,13 @@ pub struct Telemetry {
     pub api_version: u32,
     pub unit: String,
     pub reactor_type: String,
+    /// Unit size class (set by the reactor core).
+    #[serde(default)]
+    pub unit_size: crate::equipment::UnitSize,
+    #[serde(default)]
+    pub rated_gross_mwe: f64,
+    #[serde(default)]
+    pub rated_thermal_mw: f64,
     pub game_mode: GameMode,
     pub sim_time: f64,
     pub time_scale: f64,

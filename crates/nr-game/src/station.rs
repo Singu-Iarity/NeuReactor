@@ -12,8 +12,10 @@ use nr_api::{Alarm, Severity};
 use nr_reactors::{PlantEvent, Pwr};
 use serde::{Deserialize, Serialize};
 
-/// Rated net output used for dispatch [MWe].
-const RATED_NET: f64 = 1105.0;
+/// Rated net output of the unit, used for dispatch [MWe].
+fn rated_net(plant: &Pwr) -> f64 {
+    plant.p.gross_mwe - plant.p.house_load_mwe
+}
 const RAMP_MW_PER_MIN: f64 = 20.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -515,8 +517,8 @@ impl Station {
             } else {
                 let mut tgt;
                 loop {
-                    tgt = (0.4 + 0.6 * self.rand()) * RATED_NET;
-                    if (tgt - self.demand_mwe).abs() > 75.0 {
+                    tgt = (0.4 + 0.6 * self.rand()) * rated_net(plant);
+                    if (tgt - self.demand_mwe).abs() > 0.07 * rated_net(plant) {
                         break;
                     }
                 }
@@ -574,7 +576,7 @@ impl Station {
         if online && self.demand_mwe > 0.0 {
             let net = plant.gross_mwe - plant.house_load();
             let past_deadline = self.deadline.map(|d| t > d).unwrap_or(true);
-            let on_target = (net - self.demand_mwe).abs() <= 0.03 * RATED_NET;
+            let on_target = (net - self.demand_mwe).abs() <= 0.03 * rated_net(plant);
             if on_target {
                 if !self.reached {
                     self.reached = true;
@@ -645,7 +647,7 @@ impl Station {
             return 1.0;
         }
         let net = plant.gross_mwe - plant.house_load();
-        if (net - self.demand_mwe).abs() <= 0.03 * RATED_NET {
+        if (net - self.demand_mwe).abs() <= 0.03 * rated_net(plant) {
             1.05
         } else if self.deadline.map(|d| plant.time > d).unwrap_or(true) {
             0.85
@@ -682,7 +684,7 @@ impl Station {
         if plant.tg.breaker && self.demand_mwe > 0.0 {
             let net = plant.gross_mwe - plant.house_load();
             let past = self.deadline.map(|d| plant.time > d).unwrap_or(true);
-            if past && (net - self.demand_mwe).abs() > 0.03 * RATED_NET {
+            if past && (net - self.demand_mwe).abs() > 0.03 * rated_net(plant) {
                 add("off_demand", "OUTPUT OFF DEMAND", Severity::Warning);
             }
         }

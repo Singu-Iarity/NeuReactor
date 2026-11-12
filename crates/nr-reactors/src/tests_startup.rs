@@ -426,6 +426,7 @@ fn removing_modules_and_hardware_in_sandbox() {
         &mut p,
         Command::LoadScenario {
             name: "hot_standby".into(),
+            size: None,
         },
     );
     assert!(p.automation.upgrades.is_empty());
@@ -455,7 +456,15 @@ fn component_quality_changes_output() {
             },
         );
         for slot in [Slot::Turbine, Slot::Generator, Slot::Condenser] {
-            op(&mut p, Command::SetComponent { slot, era, tier });
+            op(
+                &mut p,
+                Command::SetComponent {
+                    slot,
+                    era,
+                    tier,
+                    size: None,
+                },
+            );
         }
         p.advance(300.0);
         p.gross_mwe
@@ -551,6 +560,7 @@ fn era_mismatch_fits_conversion_kit_in_sandbox() {
             slot: Slot::Generator,
             era: Era::Vintage,
             tier: Tier::Basic,
+            size: None,
         },
     );
     op(
@@ -559,6 +569,7 @@ fn era_mismatch_fits_conversion_kit_in_sandbox() {
             slot: Slot::Turbine,
             era: Era::Modern,
             tier: Tier::Quality,
+            size: None,
         },
     );
     let t = p.telemetry(1.0, false);

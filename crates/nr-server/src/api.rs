@@ -274,6 +274,21 @@ fn api_authed(
                 Err(e) => error(req, 400, &e),
             }
         }
+        (Method::Get, "/api/v1/core_layout") if is_operator => {
+            let size = w.plant.size();
+            drop(w);
+            let core = nr_reactors::core_map::core(size);
+            json_resp(
+                req,
+                200,
+                json!({
+                    "size": size,
+                    "grid": nr_reactors::core_map::grid(size),
+                    "assemblies": core,
+                    "rccas": core.iter().filter(|a| a.rcca.is_some()).count(),
+                }),
+            )
+        }
         (Method::Get, "/api/v1/station") if is_operator => {
             let st = &w.station;
             let v = json!({

@@ -369,3 +369,84 @@ fn every_unit_size_is_steady_at_full_power_and_standby() {
         );
     }
 }
+
+#[test]
+fn undersized_turbine_derates_the_unit() {
+    use nr_api::{Era, Slot, Tier, UnitSize};
+    let mut p = Pwr::full_power();
+    op(
+        &mut p,
+        Command::SetComponent {
+            slot: Slot::Turbine,
+            era: Era::Dated,
+            tier: Tier::Quality,
+            size: Some(UnitSize::Mwe900),
+        },
+    );
+    let (limit, by) = p.output_limit();
+    assert_eq!(by, Some(Slot::Turbine));
+    assert!((limit - 900.0 / 1150.0).abs() < 1e-9);
+    p.advance(1500.0);
+    assert!(!p.reactor_tripped, "{:?}", p.trips);
+    assert!(p.gross_mwe < 0.82 * 1150.0, "gross {}", p.gross_mwe);
+    assert!(p.alarms_for_test().iter().any(|a| a == "derated"));
+}
+
+#[test]
+fn undersized_rod_drives_block_rod_motion() {
+    use nr_api::{Era, RodDirection, Slot, Tier, UnitSize};
+    let mut p = Pwr::hot_standby_sized(UnitSize::Mwe1300);
+    op(
+        &mut p,
+        Command::SetComponent {
+            slot: Slot::RodDrives,
+            era: Era::Dated,
+            tier: Tier::Quality,
+            size: Some(UnitSize::Mwe1150),
+        },
+    );
+    let r = p.command(
+        &Command::RodMotion {
+            selection: "SA".into(),
+            direction: RodDirection::Out,
+        },
+        &Origin::Operator,
+    );
+    assert!(r.is_err());
+    assert!(p.alarms_for_test().iter().any(|a| a == "crdm_size"));
+    // The core size itself can't be swapped piecemeal.
+    assert!(p
+        .command(
+            &Command::SetComponent {
+                slot: Slot::ReactorCore,
+                era: Era::Dated,
+                tier: Tier::Quality,
+                size: Some(UnitSize::Mwe600),
+            },
+            &Origin::Operator,
+        )
+        .is_err());
+}
+
+#[test]
+fn ic_not_scaled_for_core_disables_automation() {
+    use nr_api::UnitSize;
+    let mut p = Pwr::full_power_sized(UnitSize::Mwe1300);
+    assert!(p.automation.equipment.ic_matches());
+    p.automation.equipment.ic_size = UnitSize::Mwe1150;
+    assert!(!p.automation.equipment.ic_matches());
+    assert!(p
+        .automation
+        .equipment
+        .required_kits()
+        .iter()
+        .any(|k| k.key.starts_with("ic_scale")));
+    p.advance(1.0);
+    assert!(p.alarms_for_test().iter().any(|a| a == "ic_scale"));
+    let t = p.telemetry(1.0, false);
+    assert_eq!(t.unit_size, UnitSize::Mwe1300);
+    // Buying the rescaling kit restores it.
+    let key = nr_api::Equipment::ic_kit_key(UnitSize::Mwe1300);
+    p.automation.equipment.kits.insert(key);
+    assert!(p.automation.equipment.ic_matches());
+}
